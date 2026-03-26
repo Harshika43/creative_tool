@@ -223,23 +223,99 @@ async function dbSaveResults(sessionId, userId, results, aiData, userInfo) {
   console.log("[DB] Session marked completed");
 }
 
-// 5. Upload dashboard PNG and save export record
-async function dbSaveDashboardExport(sessionId, userId, canvas) {
-  console.log("[DB] Uploading dashboard export...");
-  const blob = await new Promise((resolve, reject) => {
-    canvas.toBlob(b => b ? resolve(b) : reject(new Error("toBlob failed")), "image/png");
-  });
-  const filename = `${userId}/${sessionId}/dashboard.png`;
-  const publicUrl = await sb.uploadFile("cii-exports", filename, blob);
-  console.log("[DB] Dashboard PNG uploaded:", publicUrl);
 
-  const row = await sb.insert("cii_dashboard_exports", {
-    session_id:  sessionId,
-    user_id:     userId,
-    file_url:    publicUrl,
-    exported_at: new Date().toISOString(),
+// ── HTML2CANVAS LOADER ────────────────────────────────────────────────────────
+async function loadHtml2Canvas() {
+  if (window.html2canvas) return window.html2canvas;
+  return new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = "https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js";
+    s.onload  = () => resolve(window.html2canvas);
+    s.onerror = () => reject(new Error("html2canvas failed to load"));
+    document.head.appendChild(s);
   });
-  console.log("[DB] Dashboard export record saved:", row);
+}
+async function captureDashboard(el) {
+  const h2c = await loadHtml2Canvas();
+
+  // Temporarily lift overflow:hidden so html2canvas can see full content
+  const prevBodyOF  = document.body.style.overflow;
+  const prevHtmlOF  = document.documentElement.style.overflow;
+  document.body.style.overflow          = "visible";
+  document.documentElement.style.overflow = "visible";
+
+  try {
+    return await h2c(el, {
+      scale: 2,
+      useCORS: true,
+      allowTaint: true,
+      backgroundColor: "#edeae4",
+      width:        el.offsetWidth,
+      height:       el.offsetHeight,
+      windowWidth:  el.offsetWidth,
+      windowHeight: el.offsetHeight,
+      logging: false,
+      onclone: (clonedDoc) => {
+        // Strip CSS animations — frozen mid-animation = invisible elements
+        clonedDoc.querySelectorAll("*").forEach(node => {
+          node.style.animation    = "none";
+          node.style.transition   = "none";
+        });
+        // Force full opacity on animated containers
+        clonedDoc.querySelectorAll(".fi,.fu").forEach(node => {
+          node.style.opacity   = "1";
+          node.style.transform = "none";
+        });
+        // Fix overflow in the cloned document too
+        clonedDoc.body.style.overflow                = "visible";
+        clonedDoc.documentElement.style.overflow     = "visible";
+      },
+    });
+  } finally {
+    // Always restore, even if capture threw
+    document.body.style.overflow          = prevBodyOF;
+    document.documentElement.style.overflow = prevHtmlOF;
+  }
+}
+
+async function dbSaveDashboardExport(sessionId, userId, canvas) {
+  console.log("[Dashboard] Converting canvas to blob…");
+  const blob = await new Promise((resolve, reject) =>
+    canvas.toBlob(b => b ? resolve(b) : reject(new Error("toBlob returned null")), "image/png")
+  );
+
+  const filename = `dashboard_${userId}_${sessionId}.png`;
+  console.log("[Dashboard] Uploading to Storage:", filename);
+
+  const uploadRes = await fetch(`${SUPABASE_URL}/storage/v1/object/cii-exports/${filename}`, {
+    method: "POST",
+    headers: {
+      "apikey": SUPABASE_ANON_KEY,
+      "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
+      "Content-Type": "image/png",
+      "x-upsert": "true",
+    },
+    body: blob,
+  });
+
+  if (!uploadRes.ok) {
+    const errText = await uploadRes.text();
+    throw new Error(`Storage upload failed (${uploadRes.status}): ${errText}`);
+  }
+
+  const publicUrl = `${SUPABASE_URL}/storage/v1/object/public/cii-exports/${filename}`;
+  console.log("[Dashboard] Uploaded:", publicUrl);
+
+  try {
+    await sb.insert("cii_dashboard_exports", {
+      session_id:  sessionId,
+      user_id:     userId,
+      file_url:    publicUrl,
+      exported_at: new Date().toISOString(),
+    });
+  } catch(e) {
+    console.warn("[Dashboard] Export record insert failed:", e.message);
+  }
   return publicUrl;
 }
 
@@ -328,58 +404,121 @@ const AVG = [45, 55, 50, 48, 42, 52];
 
 const getProfile = cii => PROFILES.find(p=>cii>=p.min)||PROFILES[PROFILES.length-1];
 
-async function scoreWithAI(openAnswers, dims) {
-  const labeled = ["Q1 (Uses for a broken umbrella)","Q2 (Silence as a resource)"]
-    .map((label,i)=>`${label}:\n${openAnswers[i]||"(no answer)"}`)
-    .join("\n\n");
-  const dimContext = DIM.short.map((n,i)=>`${n}: ${dims[i]}/100`).join(", ");
-
-  const prompt = `You are a senior psychometric researcher scoring divergent thinking responses.
-
-SCORING SCALE — use the FULL 0-100 range:
-- 85-100: Exceptional — highly original, numerous ideas spanning wildly different domains, metaphorical, absurd, scientific AND practical
-- 65-84:  Strong — good variety, some unexpected ideas, goes beyond the obvious
-- 45-64:  Average — decent number of ideas but mostly predictable/conventional
-- 25-44:  Below average — few ideas, mostly obvious, little variety
-- 0-24:   Weak — very few ideas, all conventional, no creative stretch
-
-IMPORTANT: A response with 10+ diverse ideas across multiple domains should score at least 60. A response with 20+ ideas including unusual ones should score 75+. Do NOT compress scores into a narrow low range.
-
-Context — other dimension scores: ${dimContext}
-
-Open responses to score:
-${labeled}
-
-Return ONLY valid JSON (no markdown, no backticks, no extra text):
-{
-  "div_q1": <integer 0-100 for Q1 divergent thinking score>,
-  "div_q2": <integer 0-100 for Q2 divergent thinking score>,
-  "narrative": "One paragraph (3-4 sentences) of analytical insight referencing specific ideas from their responses. Be precise and personal.",
-  "key_insight": "One sentence identifying the single most distinctive thing about how this person's mind works creatively.",
-  "strengths": "One concrete sentence about their strongest creative trait based on both scores AND responses.",
-  "blind_spots": "One honest, specific sentence about their most underdeveloped area.",
-  "improvements": [
-    {"dim": 0, "action": "One specific 15-day exercise targeting Divergent Thinking"},
-    {"dim": 1, "action": "One specific 15-day exercise targeting Remote Association"},
-    {"dim": 2, "action": "One specific 15-day exercise targeting Risk & Openness"}
-  ],
-  "persona_type": "A 2-3 word creative archetype (e.g. 'Systematic Dreamer', 'Bold Connector', 'Cautious Visionary')"
-}`;
-
-  const res = await fetch("https://api.anthropic.com/v1/messages",{
-    method:"POST",
-    headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1200,messages:[{role:"user",content:prompt}]})
-  });
-  if(!res.ok) throw new Error(`${res.status}`);
-  const data = await res.json();
-  const parsed = JSON.parse((data.content||[]).map(b=>b.text||"").join("").replace(/```json|```/g,"").trim());
-
-  const q1 = parsed.div_q1 ?? parsed.scores?.[0] ?? 40;
-  const q2 = parsed.div_q2 ?? parsed.scores?.[1] ?? 40;
+async function scoreWithAI(openAnswers, dims, allAnswers) {
   const clamp = v => Math.max(0, Math.min(100, Math.round(Number(v) || 40)));
 
-  return { ...parsed, _divScores: [clamp(q1), clamp(q2)] };
+  const openLabeled = [
+    "Q1 (Uses for a broken umbrella)",
+    "Q2 (Silence as a valuable resource)",
+  ].map((label, i) => `${label}:\n${openAnswers[i]?.trim() || "(no answer)"}`).join("\n\n");
+
+  const behaviorSummary = Qs.filter(q => q.s === 4).map(q => {
+    const idx = allAnswers?.[q.id];
+    const chosen = idx != null ? q.options[idx] : "(not answered)";
+    return `• ${q.text.slice(0,70)}  -> "${chosen}"`;
+  }).join("\n");
+
+  const scenarioSummary = Qs.filter(q => q.s === 5).map(q => {
+    const idx = allAnswers?.[q.id];
+    const chosen = idx != null ? q.options[idx] : "(not answered)";
+    return `• ${q.sceneLabel}: "${chosen}"`;
+  }).join("\n");
+
+  const likertSummary = Qs.filter(q => q.s === 2 || q.s === 3).map(q => {
+    const v = allAnswers?.[q.id] ?? "?";
+    return `• [${v}/5] ${q.text.slice(0,80)}`;
+  }).join("\n");
+
+  const sortedDims = dims.map((d,i)=>({i,d,name:DIM.short[i]})).sort((a,b)=>a.d-b.d);
+  const bottom2 = sortedDims.slice(0,2);
+  const top1    = sortedDims[sortedDims.length-1];
+  const dimContext = DIM.short.map((n,i)=>`${n}: ${dims[i]}/100`).join(" | ");
+
+  const prompt = `You are a senior psychometric researcher and creativity coach. Analyse this person's full Creative Innovation Index assessment.
+
+=== DIMENSION SCORES ===
+${dimContext}
+Strongest: ${top1.name} (${top1.d}/100) | Weakest: ${bottom2[0].name} (${bottom2[0].d}/100), ${bottom2[1].name} (${bottom2[1].d}/100)
+
+=== OPEN-ENDED DIVERGENT THINKING RESPONSES ===
+${openLabeled}
+
+=== BEHAVIORAL CHOICES ===
+${behaviorSummary}
+
+=== SCENARIO RESPONSES ===
+${scenarioSummary}
+
+=== MINDSET & VISION SELF-RATINGS ===
+${likertSummary}
+
+=== DIVERGENT SCORING GUIDE ===
+- 85-100: 15+ ideas, wildly varied domains, metaphorical, absurd, AND practical
+- 65-84:  8-15 ideas, clear variety, some unexpected
+- 45-64:  5-10 ideas, mostly predictable
+- 25-44:  Fewer than 5 ideas, mostly obvious
+- 0-24:   1-3 ideas, all conventional
+
+Return ONLY a raw JSON object. No markdown fences. No preamble. No trailing text.
+{
+  "div_q1": <integer 0-100>,
+  "div_q2": <integer 0-100>,
+  "narrative": "<3-4 sentences. Reference specific ideas they wrote. Connect open answers to behavioral patterns. Be precise and personal, not generic.>",
+  "key_insight": "<One sharp sentence: the single most distinctive thing about how THIS person's mind works.>",
+  "strengths": "<One concrete sentence naming their strongest creative trait, grounded in their scores AND responses.>",
+  "blind_spots": "<One honest, specific sentence about their most underdeveloped creative area.>",
+  "improvements": [
+    {"dim": ${bottom2[0].i}, "action": "<Specific named 15-day daily exercise for ${bottom2[0].name}. E.g. 'Every morning for 15 days, pick a random object and list 20 unrelated uses in 5 minutes'>"},
+    {"dim": ${bottom2[1].i}, "action": "<Specific named 15-day daily exercise for ${bottom2[1].name}.>"},
+    {"dim": ${top1.i},       "action": "<A stretch challenge to push their strongest area (${top1.name}) even further.>"}
+  ],
+  "persona_type": "<2-3 word archetype specific to this profile — e.g. 'Systematic Dreamer', 'Bold Connector', 'Cautious Visionary'>"
+}`;
+
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 1600,
+      messages: [{ role: "user", content: prompt }],
+    }),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`API ${res.status}: ${errText}`);
+  }
+
+  const data = await res.json();
+  const rawText = (data.content || [])
+    .filter(b => b.type === "text")
+    .map(b => b.text || "")
+    .join("")
+    .trim();
+
+  const cleaned = rawText
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/, "")
+    .replace(/```\s*$/, "")
+    .trim();
+
+  let parsed;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch(e) {
+    const match = cleaned.match(/\{[\s\S]*\}/);
+    if (match) {
+      parsed = JSON.parse(match[0]);
+    } else {
+      throw new Error("AI response not valid JSON: " + cleaned.slice(0, 300));
+    }
+  }
+
+  return {
+    ...parsed,
+    _divScores: [clamp(parsed.div_q1 ?? 40), clamp(parsed.div_q2 ?? 40)],
+  };
 }
 
 function computeScore(answers, aiScores) {
@@ -1149,63 +1288,36 @@ function Panel5({dims, profile}) {
 function Results({results, aiData, userInfo, userId, sessionId, onRetake}) {
   const {dims, cii} = results;
   const profile = getProfile(cii);
-  const dashRef = React.useRef(null);
   const [downloading, setDownloading] = useState(false);
-  const [saveStatus, setSaveStatus] = useState("idle"); // idle | saving | saved | error
+  const [saveStatus, setSaveStatus]   = useState("idle");
+  const dashboardRef = React.useRef(null);
 
-  // ── Auto-save dashboard on mount ──────────────────────────────────────────
+  // Auto-save: wait a tick so Recharts finishes painting, then capture
   useEffect(() => {
     if (!sessionId || !userId) return;
-    const autoSave = async () => {
-      // Wait a bit for charts to fully render
-      await new Promise(r => setTimeout(r, 1500));
+    const timer = setTimeout(async () => {
+      setSaveStatus("saving");
       try {
-        await loadHtml2Canvas();
-        const canvas = await captureCanvas(dashRef.current);
-        setSaveStatus("saving");
+        const canvas = await captureDashboard(dashboardRef.current);
         await dbSaveDashboardExport(sessionId, userId, canvas);
         setSaveStatus("saved");
-        console.log("[Results] Auto-saved dashboard PNG ✓");
+        console.log("[Results] Dashboard PNG saved ✓");
       } catch(e) {
-        console.warn("[Results] Auto dashboard save failed:", e.message);
-        setSaveStatus("error");
+        setSaveStatus("error:" + e.message);
+        console.error("[Results] Full error:", e);
       }
-    };
-    autoSave();
+    }, 1500); // give charts time to animate in
+    return () => clearTimeout(timer);
   }, [sessionId, userId]);
 
-  const loadHtml2Canvas = () => new Promise((resolve, reject) => {
-    if (window.html2canvas) { resolve(); return; }
-    const s = document.createElement('script');
-    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
-    s.onload = resolve;
-    s.onerror = () => reject(new Error("html2canvas failed to load"));
-    document.head.appendChild(s);
-  });
-
-  const captureCanvas = (el) => window.html2canvas(el, {
-    scale: 2,
-    useCORS: true,
-    allowTaint: true,
-    backgroundColor: '#edeae4',
-    logging: false,
-    imageTimeout: 0,
-    removeContainer: true,
-    windowWidth: el.scrollWidth,
-    windowHeight: el.scrollHeight,
-    width: el.offsetWidth,
-    height: el.offsetHeight,
-  });
-
   const handleDownload = async () => {
-    if (!dashRef.current || downloading) return;
+    if (downloading) return;
     setDownloading(true);
     try {
-      await loadHtml2Canvas();
-      const canvas = await captureCanvas(dashRef.current);
-      const link = document.createElement('a');
+      const canvas = await captureDashboard(dashboardRef.current);
+      const link = document.createElement("a");
       link.download = `CII-Results-${userInfo?.name?.split(" ")[0] || "Report"}.png`;
-      link.href = canvas.toDataURL('image/png');
+      link.href = canvas.toDataURL("image/png");
       link.click();
     } catch(e) {
       console.error("[Download] Failed:", e);
@@ -1217,11 +1329,14 @@ function Results({results, aiData, userInfo, userId, sessionId, onRetake}) {
     idle:   null,
     saving: <span style={{color:C.gold}}> · ⏳ Saving dashboard…</span>,
     saved:  <span style={{color:C.s3}}> · ✓ All data saved</span>,
-    error:  <span style={{color:C.s4}}> · ⚠ Dashboard save failed (data still stored)</span>,
-  }[saveStatus];
+  }[saveStatus] ?? <span style={{color:C.s4,fontSize:8}}> · ⚠ {saveStatus.replace("error:","")}</span>;
 
   return (
-    <div ref={dashRef} style={{height:"100vh",background:"#edeae4",padding:"10px 14px 8px",display:"flex",flexDirection:"column",gap:8}} className="fi">
+    <div
+      ref={dashboardRef}
+      style={{height:"100vh",background:"#edeae4",padding:"10px 14px 8px",display:"flex",flexDirection:"column",gap:8}}
+      className="fi"
+    >
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexShrink:0}}>
         <div>
           <h1 style={{fontFamily:"'Playfair Display',serif",fontSize:18,fontWeight:800,color:C.ink,lineHeight:1.1}}>
@@ -1236,7 +1351,7 @@ function Results({results, aiData, userInfo, userId, sessionId, onRetake}) {
         </div>
         <div style={{display:"flex",gap:8,alignItems:"center"}}>
           <button onClick={handleDownload} disabled={downloading} style={{background:C.gold,border:"none",borderRadius:5,padding:"5px 12px",color:"#fff",fontSize:9,cursor:downloading?"default":"pointer",fontWeight:600,letterSpacing:"0.08em",whiteSpace:"nowrap"}}>
-            {downloading ? "…" : "⬇ DOWNLOAD"}
+            {downloading ? "⏳ Capturing…" : "⬇ DOWNLOAD"}
           </button>
           <button onClick={onRetake} style={{background:"transparent",border:`1.5px solid ${C.inkXL}`,borderRadius:5,padding:"5px 12px",color:C.inkM,fontSize:9,cursor:"pointer",fontWeight:600,letterSpacing:"0.08em",whiteSpace:"nowrap"}}>↩ RETAKE</button>
         </div>
@@ -1251,7 +1366,7 @@ function Results({results, aiData, userInfo, userId, sessionId, onRetake}) {
         <DashPanel title="Dimension Progress Rings"><Panel5 dims={dims} profile={profile}/></DashPanel>
       </div>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexShrink:0}}>
-        <p style={{fontSize:7.5,color:C.inkL,fontStyle:"italic"}}>Scores are AI-evaluated and psychometrically calibrated. Each dimension uses validated scoring methods.</p>
+        <p style={{fontSize:7.5,color:C.inkL,fontStyle:"italic"}}>Scores are AI-evaluated and psychometrically calibrated.</p>
         <div style={{display:"flex",alignItems:"center",gap:10}}>
           {PROFILES.map(p=>(<div key={p.name} style={{display:"flex",alignItems:"center",gap:3,opacity:profile.name===p.name?1:0.3}}><div style={{width:6,height:6,borderRadius:"50%",background:p.color}}/><span style={{fontSize:7,color:p.color,fontWeight:profile.name===p.name?700:400}}>{p.name}</span></div>))}
         </div>
@@ -1348,7 +1463,7 @@ export default function CII() {
       let finalRes = null;
 
       try {
-        const ai = await scoreWithAI(openAns, prelim.dims);
+        const ai = await scoreWithAI(openAns, prelim.dims, currentAnswers);
         finalAi  = ai;
         finalRes = computeScore(currentAnswers, ai._divScores);
         console.log("[App] AI scoring complete");
