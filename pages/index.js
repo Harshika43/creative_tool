@@ -20,9 +20,6 @@ import {
 const SUPABASE_URL    = "https://csvznkznuwubynzqzxli.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNzdnpua3pudXd1YnluenF6eGxpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ0Mjk0MzAsImV4cCI6MjA5MDAwNTQzMH0.EZexnZBOBLNPq0qQRM_ZNQKQpm9xCvssKx4AYVU2-Gc";
 
-// ── COMPLETELY REWRITTEN SUPABASE CLIENT ───────────────────────────────────────
-// Each method returns { data, error } so failures are always visible in console
-
 const BASE_HEADERS = {
   "Content-Type": "application/json",
   "apikey": SUPABASE_ANON_KEY,
@@ -31,291 +28,150 @@ const BASE_HEADERS = {
 
 async function sbRequest(method, path, body = null, extraHeaders = {}) {
   const url = `${SUPABASE_URL}${path}`;
-  const opts = {
-    method,
-    headers: { ...BASE_HEADERS, ...extraHeaders },
-  };
+  const opts = { method, headers: { ...BASE_HEADERS, ...extraHeaders } };
   if (body !== null) opts.body = JSON.stringify(body);
   const res = await fetch(url, opts);
   const text = await res.text();
   let json = null;
   try { json = JSON.parse(text); } catch(_) { json = text; }
-  if (!res.ok) {
-    console.error(`[Supabase ${method} ${path}] HTTP ${res.status}:`, json);
-    return { data: null, error: json };
-  }
+  if (!res.ok) { console.error(`[Supabase ${method} ${path}] HTTP ${res.status}:`, json); return { data: null, error: json }; }
   return { data: json, error: null };
 }
 
 const sb = {
-  // INSERT — returns first row (or null)
   async insert(table, payload) {
     const isArray = Array.isArray(payload);
-    const { data, error } = await sbRequest(
-      "POST",
-      `/rest/v1/${table}`,
-      payload,
-      { "Prefer": "return=representation" }
-    );
+    const { data, error } = await sbRequest("POST", `/rest/v1/${table}`, payload, { "Prefer": "return=representation" });
     if (error) throw new Error(typeof error === "string" ? error : JSON.stringify(error));
-    if (isArray) return data; // array insert returns array
+    if (isArray) return data;
     return Array.isArray(data) ? data[0] : data;
   },
-
-  // UPSERT — merges on conflict column, returns first row
   async upsert(table, payload, onConflict = "id") {
-    const { data, error } = await sbRequest(
-      "POST",
-      `/rest/v1/${table}?on_conflict=${onConflict}`,
-      payload,
-      { "Prefer": "resolution=merge-duplicates,return=representation" }
-    );
+    const { data, error } = await sbRequest("POST", `/rest/v1/${table}?on_conflict=${onConflict}`, payload, { "Prefer": "resolution=merge-duplicates,return=representation" });
     if (error) throw new Error(typeof error === "string" ? error : JSON.stringify(error));
     return Array.isArray(data) ? data[0] : data;
   },
-
-  // PATCH — update rows matching filter
   async patch(table, filter, payload) {
-    const { data, error } = await sbRequest(
-      "PATCH",
-      `/rest/v1/${table}?${filter}`,
-      payload,
-      { "Prefer": "return=minimal" }
-    );
+    const { data, error } = await sbRequest("PATCH", `/rest/v1/${table}?${filter}`, payload, { "Prefer": "return=minimal" });
     if (error) throw new Error(typeof error === "string" ? error : JSON.stringify(error));
     return data;
   },
-
-  // SELECT
   async select(table, filter = "") {
-    const { data, error } = await sbRequest(
-      "GET",
-      `/rest/v1/${table}${filter ? `?${filter}` : ""}`,
-      null
-    );
+    const { data, error } = await sbRequest("GET", `/rest/v1/${table}${filter ? `?${filter}` : ""}`, null);
     if (error) throw new Error(typeof error === "string" ? error : JSON.stringify(error));
     return data;
   },
-
-  // UPLOAD FILE to Storage
   async uploadFile(bucket, path, blob, contentType = "image/png") {
     const url = `${SUPABASE_URL}/storage/v1/object/${bucket}/${path}`;
     const res = await fetch(url, {
       method: "POST",
-      headers: {
-        "apikey": SUPABASE_ANON_KEY,
-        "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
-        "Content-Type": contentType,
-        "x-upsert": "true",
-      },
+      headers: { "apikey": SUPABASE_ANON_KEY, "Authorization": `Bearer ${SUPABASE_ANON_KEY}`, "Content-Type": contentType, "x-upsert": "true" },
       body: blob,
     });
     const text = await res.text();
-    if (!res.ok) {
-      console.error("[Supabase Storage upload] Error:", text);
-      throw new Error(text);
-    }
+    if (!res.ok) { console.error("[Supabase Storage upload] Error:", text); throw new Error(text); }
     return `${SUPABASE_URL}/storage/v1/object/public/${bucket}/${path}`;
   },
 };
 
-// ── DB HELPERS ─────────────────────────────────────────────────────────────────
+function genId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
 
-function genId() {
-  return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
-}
-
-// 1. Upsert user by email — returns user row with id
 async function dbUpsertUser(userInfo) {
-  console.log("[DB] Upserting user:", userInfo.email);
   const payload = {
-    email:        userInfo.email.toLowerCase().trim(),
-    full_name:    userInfo.name.trim(),
-    phone:        userInfo.phone.trim(),
-    designation:  userInfo.designation,
+    email: userInfo.email.toLowerCase().trim(),
+    full_name: userInfo.name.trim(),
+    phone: userInfo.phone.trim(),
+    designation: userInfo.designation,
     organization: userInfo.organization.trim(),
-    updated_at:   new Date().toISOString(),
+    updated_at: new Date().toISOString(),
   };
   const row = await sb.upsert("cii_users", payload, "email");
-  console.log("[DB] User upserted:", row);
   return row;
 }
 
-// 2. Create a new assessment session — returns session row with id
 async function dbCreateSession(userId) {
-  console.log("[DB] Creating session for userId:", userId);
   const sessionId = genId();
-  const row = await sb.insert("cii_sessions", {
-    id:         sessionId,
-    user_id:    userId,
-    started_at: new Date().toISOString(),
-    status:     "in_progress",
-  });
-  console.log("[DB] Session created:", row);
+  const row = await sb.insert("cii_sessions", { id: sessionId, user_id: userId, started_at: new Date().toISOString(), status: "in_progress" });
   return row;
 }
 
-// 3. Save all 25 answers — bulk insert
 async function dbSaveAnswers(sessionId, answers) {
-  console.log("[DB] Saving answers for session:", sessionId, "Count:", Object.keys(answers).length);
   const rows = Object.entries(answers)
     .filter(([_, v]) => v !== undefined && v !== null && v !== "")
     .map(([question_id, answer_value]) => ({
-      session_id:   sessionId,
-      question_id,
-      answer_value: typeof answer_value === "object"
-        ? JSON.stringify(answer_value)
-        : String(answer_value),
+      session_id: sessionId, question_id,
+      answer_value: typeof answer_value === "object" ? JSON.stringify(answer_value) : String(answer_value),
       saved_at: new Date().toISOString(),
     }));
-
-  if (rows.length === 0) {
-    console.warn("[DB] No answers to save!");
-    return;
-  }
-
-  // Insert in batches of 10 to avoid payload size issues
+  if (rows.length === 0) return;
   for (let i = 0; i < rows.length; i += 10) {
-    const batch = rows.slice(i, i + 10);
-    await sb.insert("cii_answers", batch);
-    console.log(`[DB] Answers batch ${Math.floor(i/10)+1} saved (${batch.length} rows)`);
+    await sb.insert("cii_answers", rows.slice(i, i + 10));
   }
 }
 
-// 4. Save final results + AI data
 async function dbSaveResults(sessionId, userId, results, aiData, userInfo) {
-  console.log("[DB] Saving results for session:", sessionId);
   const { dims, cii } = results;
   const profile = getProfile(cii);
-
   const payload = {
-    session_id:     sessionId,
-    user_id:        userId,
-    cii_score:      cii,
-    profile_name:   profile.name,
-    profile_tag:    profile.tag,
-    dim_divergent:  dims[0],
-    dim_assoc:      dims[1],
-    dim_risk:       dims[2],
-    dim_vision:     dims[3],
-    dim_behavior:   dims[4],
-    dim_innovation: dims[5],
-    ai_narrative:       aiData?.narrative     || null,
-    ai_key_insight:     aiData?.key_insight   || null,
-    ai_strengths:       aiData?.strengths     || null,
-    ai_blind_spots:     aiData?.blind_spots   || null,
-    ai_persona_type:    aiData?.persona_type  || null,
-    ai_improvements:    aiData?.improvements
-      ? JSON.stringify(aiData.improvements)
-      : null,
+    session_id: sessionId, user_id: userId, cii_score: cii, profile_name: profile.name, profile_tag: profile.tag,
+    dim_divergent: dims[0], dim_assoc: dims[1], dim_risk: dims[2], dim_vision: dims[3], dim_behavior: dims[4], dim_innovation: dims[5],
+    ai_narrative: aiData?.narrative || null, ai_key_insight: aiData?.key_insight || null, ai_strengths: aiData?.strengths || null,
+    ai_blind_spots: aiData?.blind_spots || null, ai_persona_type: aiData?.persona_type || null,
+    ai_improvements: aiData?.improvements ? JSON.stringify(aiData.improvements) : null,
     completed_at: new Date().toISOString(),
   };
-
   const row = await sb.insert("cii_results", payload);
-  console.log("[DB] Results saved:", row);
-
-  // Mark session as completed
-  await sb.patch(
-    "cii_sessions",
-    `id=eq.${sessionId}`,
-    { status: "completed", completed_at: new Date().toISOString() }
-  );
-  console.log("[DB] Session marked completed");
+  await sb.patch("cii_sessions", `id=eq.${sessionId}`, { status: "completed", completed_at: new Date().toISOString() });
+  return row;
 }
 
-
-// ── HTML2CANVAS LOADER ────────────────────────────────────────────────────────
 async function loadHtml2Canvas() {
   if (window.html2canvas) return window.html2canvas;
   return new Promise((resolve, reject) => {
     const s = document.createElement("script");
     s.src = "https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js";
-    s.onload  = () => resolve(window.html2canvas);
+    s.onload = () => resolve(window.html2canvas);
     s.onerror = () => reject(new Error("html2canvas failed to load"));
     document.head.appendChild(s);
   });
 }
+
 async function captureDashboard(el) {
   const h2c = await loadHtml2Canvas();
-
-  // Temporarily lift overflow:hidden so html2canvas can see full content
-  const prevBodyOF  = document.body.style.overflow;
-  const prevHtmlOF  = document.documentElement.style.overflow;
-  document.body.style.overflow          = "visible";
+  const prevBodyOF = document.body.style.overflow;
+  const prevHtmlOF = document.documentElement.style.overflow;
+  document.body.style.overflow = "visible";
   document.documentElement.style.overflow = "visible";
-
   try {
     return await h2c(el, {
-      scale: 2,
-      useCORS: true,
-      allowTaint: true,
-      backgroundColor: "#edeae4",
-      width:        el.offsetWidth,
-      height:       el.offsetHeight,
-      windowWidth:  el.offsetWidth,
-      windowHeight: el.offsetHeight,
-      logging: false,
+      scale: 2, useCORS: true, allowTaint: true, backgroundColor: "#edeae4",
+      width: el.offsetWidth, height: el.offsetHeight, windowWidth: el.offsetWidth, windowHeight: el.offsetHeight, logging: false,
       onclone: (clonedDoc) => {
-        // Strip CSS animations — frozen mid-animation = invisible elements
-        clonedDoc.querySelectorAll("*").forEach(node => {
-          node.style.animation    = "none";
-          node.style.transition   = "none";
-        });
-        // Force full opacity on animated containers
-        clonedDoc.querySelectorAll(".fi,.fu").forEach(node => {
-          node.style.opacity   = "1";
-          node.style.transform = "none";
-        });
-        // Fix overflow in the cloned document too
-        clonedDoc.body.style.overflow                = "visible";
-        clonedDoc.documentElement.style.overflow     = "visible";
+        clonedDoc.querySelectorAll("*").forEach(node => { node.style.animation = "none"; node.style.transition = "none"; });
+        clonedDoc.querySelectorAll(".fi,.fu").forEach(node => { node.style.opacity = "1"; node.style.transform = "none"; });
+        clonedDoc.body.style.overflow = "visible";
+        clonedDoc.documentElement.style.overflow = "visible";
       },
     });
   } finally {
-    // Always restore, even if capture threw
-    document.body.style.overflow          = prevBodyOF;
+    document.body.style.overflow = prevBodyOF;
     document.documentElement.style.overflow = prevHtmlOF;
   }
 }
 
 async function dbSaveDashboardExport(sessionId, userId, canvas) {
-  console.log("[Dashboard] Converting canvas to blob…");
   const blob = await new Promise((resolve, reject) =>
     canvas.toBlob(b => b ? resolve(b) : reject(new Error("toBlob returned null")), "image/png")
   );
-
   const filename = `dashboard_${userId}_${sessionId}.png`;
-  console.log("[Dashboard] Uploading to Storage:", filename);
-
   const uploadRes = await fetch(`${SUPABASE_URL}/storage/v1/object/cii-exports/${filename}`, {
     method: "POST",
-    headers: {
-      "apikey": SUPABASE_ANON_KEY,
-      "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
-      "Content-Type": "image/png",
-      "x-upsert": "true",
-    },
+    headers: { "apikey": SUPABASE_ANON_KEY, "Authorization": `Bearer ${SUPABASE_ANON_KEY}`, "Content-Type": "image/png", "x-upsert": "true" },
     body: blob,
   });
-
-  if (!uploadRes.ok) {
-    const errText = await uploadRes.text();
-    throw new Error(`Storage upload failed (${uploadRes.status}): ${errText}`);
-  }
-
+  if (!uploadRes.ok) { const errText = await uploadRes.text(); throw new Error(`Storage upload failed (${uploadRes.status}): ${errText}`); }
   const publicUrl = `${SUPABASE_URL}/storage/v1/object/public/cii-exports/${filename}`;
-  console.log("[Dashboard] Uploaded:", publicUrl);
-
-  try {
-    await sb.insert("cii_dashboard_exports", {
-      session_id:  sessionId,
-      user_id:     userId,
-      file_url:    publicUrl,
-      exported_at: new Date().toISOString(),
-    });
-  } catch(e) {
-    console.warn("[Dashboard] Export record insert failed:", e.message);
-  }
+  try { await sb.insert("cii_dashboard_exports", { session_id: sessionId, user_id: userId, file_url: publicUrl, exported_at: new Date().toISOString() }); } catch(e) { console.warn("[Dashboard] Export record insert failed:", e.message); }
   return publicUrl;
 }
 
@@ -401,34 +257,28 @@ const DIM = {
 };
 
 const AVG = [45, 55, 50, 48, 42, 52];
-
 const getProfile = cii => PROFILES.find(p=>cii>=p.min)||PROFILES[PROFILES.length-1];
+
+// ── INDIAN PHONE VALIDATION ────────────────────────────────────────────────────
+// Valid Indian mobile: starts with 6, 7, 8, or 9; exactly 10 digits (after stripping +91 or 0)
+function parseIndianPhone(raw) {
+  const stripped = raw.replace(/[\s\-().]/g, "");
+  // Remove country code prefix if present
+  const normalized = stripped.replace(/^(\+91|91|0)/, "");
+  return normalized;
+}
+
+function isValidIndianPhone(raw) {
+  const num = parseIndianPhone(raw);
+  return /^[6-9]\d{9}$/.test(num);
+}
 
 async function scoreWithAI(openAnswers, dims, allAnswers) {
   const clamp = v => Math.max(0, Math.min(100, Math.round(Number(v) || 40)));
-
-  const openLabeled = [
-    "Q1 (Uses for a broken umbrella)",
-    "Q2 (Silence as a valuable resource)",
-  ].map((label, i) => `${label}:\n${openAnswers[i]?.trim() || "(no answer)"}`).join("\n\n");
-
-  const behaviorSummary = Qs.filter(q => q.s === 4).map(q => {
-    const idx = allAnswers?.[q.id];
-    const chosen = idx != null ? q.options[idx] : "(not answered)";
-    return `• ${q.text.slice(0,70)}  -> "${chosen}"`;
-  }).join("\n");
-
-  const scenarioSummary = Qs.filter(q => q.s === 5).map(q => {
-    const idx = allAnswers?.[q.id];
-    const chosen = idx != null ? q.options[idx] : "(not answered)";
-    return `• ${q.sceneLabel}: "${chosen}"`;
-  }).join("\n");
-
-  const likertSummary = Qs.filter(q => q.s === 2 || q.s === 3).map(q => {
-    const v = allAnswers?.[q.id] ?? "?";
-    return `• [${v}/5] ${q.text.slice(0,80)}`;
-  }).join("\n");
-
+  const openLabeled = ["Q1 (Uses for a broken umbrella)", "Q2 (Silence as a valuable resource)"].map((label, i) => `${label}:\n${openAnswers[i]?.trim() || "(no answer)"}`).join("\n\n");
+  const behaviorSummary = Qs.filter(q => q.s === 4).map(q => { const idx = allAnswers?.[q.id]; const chosen = idx != null ? q.options[idx] : "(not answered)"; return `• ${q.text.slice(0,70)}  -> "${chosen}"`; }).join("\n");
+  const scenarioSummary = Qs.filter(q => q.s === 5).map(q => { const idx = allAnswers?.[q.id]; const chosen = idx != null ? q.options[idx] : "(not answered)"; return `• ${q.sceneLabel}: "${chosen}"`; }).join("\n");
+  const likertSummary = Qs.filter(q => q.s === 2 || q.s === 3).map(q => { const v = allAnswers?.[q.id] ?? "?"; return `• [${v}/5] ${q.text.slice(0,80)}`; }).join("\n");
   const sortedDims = dims.map((d,i)=>({i,d,name:DIM.short[i]})).sort((a,b)=>a.d-b.d);
   const bottom2 = sortedDims.slice(0,2);
   const top1    = sortedDims[sortedDims.length-1];
@@ -478,47 +328,16 @@ Return ONLY a raw JSON object. No markdown fences. No preamble. No trailing text
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 1600,
-      messages: [{ role: "user", content: prompt }],
-    }),
+    body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1600, messages: [{ role: "user", content: prompt }] }),
   });
 
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`API ${res.status}: ${errText}`);
-  }
-
+  if (!res.ok) { const errText = await res.text(); throw new Error(`API ${res.status}: ${errText}`); }
   const data = await res.json();
-  const rawText = (data.content || [])
-    .filter(b => b.type === "text")
-    .map(b => b.text || "")
-    .join("")
-    .trim();
-
-  const cleaned = rawText
-    .replace(/^```json\s*/i, "")
-    .replace(/^```\s*/, "")
-    .replace(/```\s*$/, "")
-    .trim();
-
+  const rawText = (data.content || []).filter(b => b.type === "text").map(b => b.text || "").join("").trim();
+  const cleaned = rawText.replace(/^```json\s*/i, "").replace(/^```\s*/, "").replace(/```\s*$/, "").trim();
   let parsed;
-  try {
-    parsed = JSON.parse(cleaned);
-  } catch(e) {
-    const match = cleaned.match(/\{[\s\S]*\}/);
-    if (match) {
-      parsed = JSON.parse(match[0]);
-    } else {
-      throw new Error("AI response not valid JSON: " + cleaned.slice(0, 300));
-    }
-  }
-
-  return {
-    ...parsed,
-    _divScores: [clamp(parsed.div_q1 ?? 40), clamp(parsed.div_q2 ?? 40)],
-  };
+  try { parsed = JSON.parse(cleaned); } catch(e) { const match = cleaned.match(/\{[\s\S]*\}/); if (match) { parsed = JSON.parse(match[0]); } else { throw new Error("AI response not valid JSON: " + cleaned.slice(0, 300)); } }
+  return { ...parsed, _divScores: [clamp(parsed.div_q1 ?? 40), clamp(parsed.div_q2 ?? 40)] };
 }
 
 function computeScore(answers, aiScores) {
@@ -541,10 +360,20 @@ function computeScore(answers, aiScores) {
   return {dims,cii};
 }
 
+// ── GLOBAL CSS — uses viewport-relative units for universal laptop scaling ─────
 const CSS=`
 @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,700;0,800;1,700&family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&display=swap');
 *{box-sizing:border-box;margin:0;padding:0}
-body,html{font-family:'DM Sans',sans-serif;background:${C.bg};color:${C.ink};overflow:hidden}
+html{font-size:clamp(13px,1.1vw,16px)}
+body,html{
+  font-family:'DM Sans',sans-serif;
+  background:${C.bg};
+  color:${C.ink};
+  overflow:hidden;
+  width:100vw;
+  height:100vh;
+}
+#__next,[data-reactroot]{height:100vh;overflow:hidden;}
 @keyframes fadeUp{from{opacity:0;transform:translateY(22px)}to{opacity:1;transform:none}}
 @keyframes fadeIn{from{opacity:0}to{opacity:1}}
 @keyframes spinR{to{transform:rotate(360deg)}}
@@ -555,24 +384,52 @@ body,html{font-family:'DM Sans',sans-serif;background:${C.bg};color:${C.ink};ove
 textarea:focus,input:focus{outline:none}
 ::-webkit-scrollbar{width:3px}
 ::-webkit-scrollbar-thumb{background:${C.inkXL};border-radius:2px}
-button,textarea,input{font-family:'DM Sans',sans-serif!important}
-textarea::placeholder,input::placeholder{color:${C.inkXL};font-size:13px}
+.no-scroll::-webkit-scrollbar{display:none}
+button,textarea,input,select{font-family:'DM Sans',sans-serif!important}
+textarea::placeholder,input::placeholder{color:${C.inkXL};font-size:0.85em}
 input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none}
+
+/* ── Consent checkbox ── */
+.consent-check-wrap{
+  display:flex;align-items:flex-start;gap:10px;
+  background:${C.goldBg};border:1.5px solid ${C.gold}35;
+  border-radius:10px;padding:12px 14px;cursor:pointer;
+  transition:border-color .2s,background .2s;
+}
+.consent-check-wrap:hover{border-color:${C.gold}70;background:${C.goldBg};}
+.consent-check-wrap.checked{border-color:${C.gold};background:rgba(176,125,58,0.12);}
+.consent-box{
+  flex-shrink:0;width:20px;height:20px;border-radius:5px;
+  border:2px solid ${C.gold}60;background:${C.white};
+  display:flex;align-items:center;justify-content:center;
+  margin-top:1px;transition:all .2s;
+}
+.consent-box.checked{background:${C.gold};border-color:${C.gold};}
+.phone-flag{
+  position:absolute;left:12px;top:50%;transform:translateY(-50%);
+  font-size:16px;line-height:1;pointer-events:none;
+}
+.phone-prefix{
+  position:absolute;left:36px;top:50%;transform:translateY(-50%);
+  font-size:13px;color:${C.inkM};font-weight:600;pointer-events:none;
+  border-right:1.5px solid ${C.inkXL};padding-right:8px;line-height:1;
+}
 `;
 
-// ── USER DETAILS FORM ──────────────────────────────────────────────────────────
-
+// ── DESIGNATIONS ───────────────────────────────────────────────────────────────
 const DESIGNATIONS = [
   "Student","Intern","Individual Contributor","Team Lead","Manager",
   "Senior Manager","Director","VP / Head of Function","C-Suite / Founder","Freelancer / Consultant","Other"
 ];
 
+// ── USER DETAILS FORM ──────────────────────────────────────────────────────────
 function UserDetailsForm({ onSubmit }) {
   const [form, setForm] = useState({ name:"", email:"", phone:"", designation:"", organization:"" });
   const [errors, setErrors] = useState({});
   const [focused, setFocused] = useState(null);
   const [step, setStep] = useState(0);
   const [saving, setSaving] = useState(false);
+  const [consentGiven, setConsentGiven] = useState(false);
 
   const set = (k,v) => { setForm(p=>({...p,[k]:v})); setErrors(p=>({...p,[k]:""})); };
 
@@ -580,7 +437,8 @@ function UserDetailsForm({ onSubmit }) {
     const e = {};
     if (!form.name.trim()) e.name = "Name is required";
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) e.email = "Valid email required";
-    if (!/^\+?[\d\s\-]{8,15}$/.test(form.phone)) e.phone = "Valid phone number required";
+    // Indian phone validation
+    if (!isValidIndianPhone(form.phone)) e.phone = "Enter a valid 10-digit Indian mobile number (starting with 6, 7, 8, or 9)";
     return e;
   };
 
@@ -588,6 +446,7 @@ function UserDetailsForm({ onSubmit }) {
     const e = {};
     if (!form.designation) e.designation = "Please select a designation";
     if (!form.organization.trim()) e.organization = "Organization is required";
+    if (!consentGiven) e.consent = "Please provide consent to proceed";
     return e;
   };
 
@@ -603,13 +462,11 @@ function UserDetailsForm({ onSubmit }) {
     setSaving(true);
     try {
       const userRow = await dbUpsertUser(form);
-      // userRow.id is the UUID from Supabase — this is critical
       const uid = userRow?.id;
       if (!uid) throw new Error("User row returned no id");
       onSubmit(form, uid);
     } catch(err) {
       console.error("[UserDetailsForm] Save failed:", err.message);
-      // Still let them proceed with a generated id so UI doesn't break
       onSubmit(form, genId());
     }
     setSaving(false);
@@ -618,90 +475,108 @@ function UserDetailsForm({ onSubmit }) {
   const inputStyle = (k) => ({
     width:"100%", background:C.white,
     border:`1.5px solid ${errors[k] ? C.s4 : focused===k ? C.gold : C.inkXL}`,
-    borderRadius:10, padding:"11px 14px", color:C.ink, fontSize:14,
+    borderRadius:10, padding:"12px 14px", color:C.ink, fontSize:"0.9rem",
     lineHeight:1.5, transition:"border-color .2s",
     boxShadow: focused===k ? `0 0 0 3px ${C.gold}18` : "none",
   });
 
-  const labelStyle = { fontSize:10, fontWeight:700, letterSpacing:"0.18em", color:C.inkL, marginBottom:5, display:"block" };
+  const labelStyle = { fontSize:"0.65rem", fontWeight:700, letterSpacing:"0.18em", color:C.inkL, marginBottom:6, display:"block" };
 
   const progressDots = [0,1].map(i => (
-    <div key={i} style={{
-      width: i===step ? 22 : 8, height:8, borderRadius:4,
-      background: i<=step ? C.gold : C.inkXL,
-      transition:"all .3s ease"
-    }}/>
+    <div key={i} style={{ width: i===step ? 24 : 8, height:8, borderRadius:4, background: i<=step ? C.gold : C.inkXL, transition:"all .3s ease" }}/>
   ));
+
+  // Display raw phone digits only, strip non-numeric for storage
+  const handlePhoneChange = (e) => {
+    // Allow digits, spaces, hyphens, plus sign
+    const raw = e.target.value.replace(/[^\d\s\-+()]/g, "");
+    set("phone", raw);
+  };
 
   return (
     <div style={{
-      height:"100vh",
+      height:"100vh", width:"100vw",
       background:`linear-gradient(150deg,#fdf9f3 0%,#f5f0e8 55%,#ede6da 100%)`,
       display:"flex", flexDirection:"column", alignItems:"center",
-      justifyContent:"center", padding:"40px 20px", overflow:"auto"
+      justifyContent:"center", padding:"2vh 20px", overflow:"auto"
     }}>
-      <div style={{maxWidth:460, width:"100%"}} className="fu">
-        <div style={{textAlign:"center", marginBottom:28}}>
+      <div style={{maxWidth:"min(480px, 92vw)", width:"100%"}} className="fu">
+        {/* Header */}
+        <div style={{textAlign:"center", marginBottom:"2vh"}}>
           <div style={{
-            width:48, height:48, borderRadius:"50%",
+            width:"3rem", height:"3rem", borderRadius:"50%",
             background:`linear-gradient(135deg,${C.gold}25,${C.gold}10)`,
             border:`1.5px solid ${C.gold}40`,
             display:"flex", alignItems:"center", justifyContent:"center",
-            margin:"0 auto 14px", fontSize:20
+            margin:"0 auto 1rem", fontSize:"1.2rem"
           }}>✦</div>
-          <div style={{fontSize:9, letterSpacing:"0.42em", color:C.gold, fontWeight:700, marginBottom:6}}>
+          <div style={{fontSize:"0.6rem", letterSpacing:"0.42em", color:C.gold, fontWeight:700, marginBottom:"0.4rem"}}>
             BEFORE WE BEGIN
           </div>
           <h2 style={{
             fontFamily:"'Playfair Display',serif",
-            fontSize:"clamp(24px,5vw,34px)", fontWeight:800,
-            color:C.ink, lineHeight:1.1, marginBottom:8
+            fontSize:"clamp(1.4rem,3vw,2rem)", fontWeight:800,
+            color:C.ink, lineHeight:1.1, marginBottom:"0.5rem"
           }}>
             {step === 0 ? "Tell us about yourself" : "Your professional context"}
           </h2>
-          <p style={{fontSize:13, color:C.inkM, lineHeight:1.7, maxWidth:360, margin:"0 auto"}}>
-            {step === 0
-              ? "This helps personalise your Creative Innovation Index report."
-              : "Your role context helps calibrate your results against relevant peers."}
+          <p style={{fontSize:"0.8rem", color:C.inkM, lineHeight:1.7, maxWidth:360, margin:"0 auto"}}>
+            {step === 0 ? "This helps personalise your Creative Innovation Index report." : "Your role context helps calibrate your results against relevant peers."}
           </p>
         </div>
 
-        <div style={{display:"flex", justifyContent:"center", gap:6, marginBottom:24}}>
+        {/* Progress dots */}
+        <div style={{display:"flex", justifyContent:"center", gap:6, marginBottom:"1.5vh"}}>
           {progressDots}
         </div>
 
+        {/* Card */}
         <div style={{
           background:C.white, border:`1.5px solid ${C.inkXL}`,
-          borderRadius:18, padding:"28px 28px 24px",
+          borderRadius:18, padding:"clamp(18px,3vh,28px) clamp(18px,3vw,28px)",
           boxShadow:"0 8px 40px rgba(28,24,20,0.08)"
         }}>
+          {/* ── Step 0: Personal info ── */}
           {step === 0 && (
-            <div style={{display:"flex", flexDirection:"column", gap:18}}>
+            <div style={{display:"flex", flexDirection:"column", gap:"1.1rem"}}>
               <div>
                 <label style={labelStyle}>FULL NAME</label>
                 <input value={form.name} onChange={e=>set("name",e.target.value)}
                   onFocus={()=>setFocused("name")} onBlur={()=>setFocused(null)}
                   placeholder="e.g. Arjun Sharma" style={inputStyle("name")}/>
-                {errors.name && <div style={{fontSize:10, color:C.s4, marginTop:4}}>{errors.name}</div>}
+                {errors.name && <div style={{fontSize:"0.65rem", color:C.s4, marginTop:4}}>{errors.name}</div>}
               </div>
               <div>
                 <label style={labelStyle}>EMAIL ADDRESS</label>
                 <input type="email" value={form.email} onChange={e=>set("email",e.target.value)}
                   onFocus={()=>setFocused("email")} onBlur={()=>setFocused(null)}
                   placeholder="e.g. arjun@company.com" style={inputStyle("email")}/>
-                {errors.email && <div style={{fontSize:10, color:C.s4, marginTop:4}}>{errors.email}</div>}
+                {errors.email && <div style={{fontSize:"0.65rem", color:C.s4, marginTop:4}}>{errors.email}</div>}
               </div>
               <div>
-                <label style={labelStyle}>PHONE NUMBER</label>
-                <input type="tel" value={form.phone} onChange={e=>set("phone",e.target.value)}
-                  onFocus={()=>setFocused("phone")} onBlur={()=>setFocused(null)}
-                  placeholder="e.g. +91 98765 43210" style={inputStyle("phone")}/>
-                {errors.phone && <div style={{fontSize:10, color:C.s4, marginTop:4}}>{errors.phone}</div>}
+                <label style={labelStyle}>INDIAN MOBILE NUMBER</label>
+                <div style={{position:"relative"}}>
+                  <span className="phone-flag">🇮🇳</span>
+                  <span className="phone-prefix">+91</span>
+                  <input
+                    type="tel"
+                    value={form.phone}
+                    onChange={handlePhoneChange}
+                    onFocus={()=>setFocused("phone")} onBlur={()=>setFocused(null)}
+                    placeholder="98765 43210"
+                    maxLength={15}
+                    style={{...inputStyle("phone"), paddingLeft:"70px"}}
+                  />
+                </div>
+                {errors.phone
+                  ? <div style={{fontSize:"0.65rem", color:C.s4, marginTop:4}}>{errors.phone}</div>
+                  : <div style={{fontSize:"0.62rem", color:C.inkL, marginTop:4}}>10-digit Indian mobile (starts with 6–9). E.g. 98765 43210</div>
+                }
               </div>
               <button onClick={handleNext} style={{
                 width:"100%", background:C.ink, color:C.cream,
-                border:"none", borderRadius:11, padding:"14px",
-                fontSize:13, fontWeight:700, cursor:"pointer",
+                border:"none", borderRadius:11, padding:"0.85rem",
+                fontSize:"0.82rem", fontWeight:700, cursor:"pointer",
                 letterSpacing:"0.08em", boxShadow:"0 4px 18px rgba(28,24,20,0.18)", marginTop:4
               }}>
                 CONTINUE →
@@ -709,8 +584,9 @@ function UserDetailsForm({ onSubmit }) {
             </div>
           )}
 
+          {/* ── Step 1: Professional context + consent ── */}
           {step === 1 && (
-            <div style={{display:"flex", flexDirection:"column", gap:18}}>
+            <div style={{display:"flex", flexDirection:"column", gap:"1.1rem"}}>
               <div>
                 <label style={labelStyle}>WORK DESIGNATION</label>
                 <div style={{position:"relative"}}>
@@ -724,39 +600,59 @@ function UserDetailsForm({ onSubmit }) {
                   <div style={{position:"absolute",right:12,top:"50%",transform:"translateY(-50%)",
                     pointerEvents:"none",color:C.gold,fontSize:12}}>▾</div>
                 </div>
-                {errors.designation && <div style={{fontSize:10, color:C.s4, marginTop:4}}>{errors.designation}</div>}
+                {errors.designation && <div style={{fontSize:"0.65rem", color:C.s4, marginTop:4}}>{errors.designation}</div>}
               </div>
               <div>
                 <label style={labelStyle}>ORGANIZATION / COMPANY</label>
                 <input value={form.organization} onChange={e=>set("organization",e.target.value)}
                   onFocus={()=>setFocused("organization")} onBlur={()=>setFocused(null)}
                   placeholder="e.g. Infosys, Razorpay, Self-employed..." style={inputStyle("organization")}/>
-                {errors.organization && <div style={{fontSize:10, color:C.s4, marginTop:4}}>{errors.organization}</div>}
+                {errors.organization && <div style={{fontSize:"0.65rem", color:C.s4, marginTop:4}}>{errors.organization}</div>}
               </div>
-              <div style={{
-                background:`${C.gold}08`, border:`1px solid ${C.gold}25`,
-                borderRadius:8, padding:"10px 12px",
-                display:"flex", gap:8, alignItems:"flex-start"
-              }}>
-                <span style={{fontSize:13, flexShrink:0}}>🔒</span>
-                <p style={{fontSize:10, color:C.inkM, lineHeight:1.65, margin:0}}>
-                  Your details are securely stored and used only to personalise your report. Never shared.
-                </p>
+
+              {/* ── CONSENT CHECKBOX ── */}
+              <div>
+                <label style={labelStyle}>DATA CONSENT</label>
+                <div
+                  className={`consent-check-wrap ${consentGiven ? "checked" : ""}`}
+                  onClick={() => { setConsentGiven(v => !v); setErrors(p=>({...p, consent:""})); }}
+                  role="checkbox"
+                  aria-checked={consentGiven}
+                  tabIndex={0}
+                  onKeyDown={e => e.key===" " && (setConsentGiven(v=>!v), setErrors(p=>({...p,consent:""})))}
+                >
+                  <div className={`consent-box ${consentGiven ? "checked" : ""}`}>
+                    {consentGiven && (
+                      <svg width="12" height="9" viewBox="0 0 12 9" fill="none">
+                        <path d="M1.5 4.5L4.5 7.5L10.5 1.5" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                      </svg>
+                    )}
+                  </div>
+                  <p style={{fontSize:"0.75rem", color:C.inkM, lineHeight:1.7, margin:0}}>
+                    I consent to providing my details for this assessment.
+                    {" "}<span style={{color:C.gold, fontWeight:600}}>Details will not be shared with third parties for marketing purposes.</span>
+                  </p>
+                </div>
+                {errors.consent && (
+                  <div style={{fontSize:"0.65rem", color:C.s4, marginTop:5, display:"flex", alignItems:"center", gap:5}}>
+                    <span>⚠</span> {errors.consent}
+                  </div>
+                )}
               </div>
+
               <div style={{display:"flex", gap:10, marginTop:4}}>
                 <button onClick={()=>setStep(0)} style={{
                   flex:"0 0 auto", background:"transparent",
                   border:`1.5px solid ${C.inkXL}`, borderRadius:11,
-                  padding:"14px 20px", color:C.inkM,
-                  fontSize:13, fontWeight:600, cursor:"pointer"
-                }}>
-                  ← Back
-                </button>
+                  padding:"0.85rem 1.2rem", color:C.inkM,
+                  fontSize:"0.82rem", fontWeight:600, cursor:"pointer"
+                }}>← Back</button>
                 <button onClick={handleSubmit} disabled={saving} style={{
-                  flex:1, background:saving?C.inkXL:C.gold, color:C.white,
-                  border:"none", borderRadius:11, padding:"14px",
-                  fontSize:13, fontWeight:700, cursor:saving?"default":"pointer",
-                  letterSpacing:"0.08em", boxShadow:`0 4px 18px ${C.gold}45`
+                  flex:1, background:saving?C.inkXL:consentGiven?C.gold:`${C.gold}60`,
+                  color:C.white, border:"none", borderRadius:11, padding:"0.85rem",
+                  fontSize:"0.82rem", fontWeight:700, cursor:saving?"default":consentGiven?"pointer":"not-allowed",
+                  letterSpacing:"0.08em", boxShadow:consentGiven?`0 4px 18px ${C.gold}45`:"none",
+                  transition:"all .2s"
                 }}>
                   {saving ? "SAVING..." : "START ASSESSMENT →"}
                 </button>
@@ -765,7 +661,7 @@ function UserDetailsForm({ onSubmit }) {
           )}
         </div>
 
-        <p style={{textAlign:"center", fontSize:10, color:C.inkXL, marginTop:14, letterSpacing:"0.1em"}}>
+        <p style={{textAlign:"center", fontSize:"0.62rem", color:C.inkXL, marginTop:12, letterSpacing:"0.1em"}}>
           STEP {step+1} OF 2 · {step===0 ? "PERSONAL INFO" : "PROFESSIONAL CONTEXT"}
         </p>
       </div>
@@ -774,110 +670,362 @@ function UserDetailsForm({ onSubmit }) {
 }
 
 // ── WELCOME ────────────────────────────────────────────────────────────────────
-
 function Welcome({onStart}) {
   return (
-    <div style={{height:"100vh",background:`linear-gradient(150deg,#fdf9f3 0%,#f5f0e8 55%,#ede6da 100%)`,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"40px 20px",overflow:"auto"}}>
-      <div style={{maxWidth:480,width:"100%"}} className="fu">
-        <div style={{width:200,height:120,margin:"0 auto 28px"}}>{Illus.welcome}</div>
-        <div style={{textAlign:"center",marginBottom:8}}><span style={{fontSize:9,letterSpacing:"0.42em",color:C.gold,fontWeight:700}}>PSYCHOMETRIC ASSESSMENT</span></div>
-        <h1 style={{fontFamily:"'Playfair Display',serif",fontSize:"clamp(40px,9vw,68px)",fontWeight:800,color:C.ink,lineHeight:.92,letterSpacing:"-0.02em",textAlign:"center",marginBottom:18}}>Creative<br/>Innovation<br/><span style={{color:C.gold,fontStyle:"italic"}}>Index</span></h1>
-        <p style={{fontSize:13,color:C.inkM,lineHeight:1.8,textAlign:"center",maxWidth:400,margin:"0 auto 26px"}}>A multi-method assessment measuring how creative and innovative you truly are — with AI-powered analysis of your actual thinking.</p>
-        <div style={{display:"flex",gap:8,marginBottom:22}}>
-          {[["25","Questions"],["5","Dimensions"],["~12","Minutes"]].map(([n,l])=>(<div key={l} style={{background:C.white,border:`1.5px solid ${C.inkXL}`,borderRadius:14,padding:"14px 16px",textAlign:"center",flex:1}}><div style={{fontFamily:"'Playfair Display',serif",fontSize:26,fontWeight:800,color:C.gold,lineHeight:1}}>{n}</div><div style={{fontSize:9,color:C.inkL,letterSpacing:"0.18em",marginTop:4,fontWeight:600}}>{l}</div></div>))}
+    <div style={{
+      height:"100vh", width:"100vw",
+      background:`linear-gradient(150deg,#fdf9f3 0%,#f5f0e8 55%,#ede6da 100%)`,
+      display:"flex", flexDirection:"column", alignItems:"center",
+      justifyContent:"center", padding:"2vh 20px", overflow:"auto"
+    }}>
+      <div style={{maxWidth:"min(500px, 92vw)", width:"100%"}} className="fu">
+        <div style={{width:"min(200px,40vw)", height:"auto", aspectRatio:"200/120", margin:"0 auto 2vh"}}>{Illus.welcome}</div>
+        <div style={{textAlign:"center",marginBottom:"0.6rem"}}>
+          <span style={{fontSize:"0.6rem",letterSpacing:"0.42em",color:C.gold,fontWeight:700}}>PSYCHOMETRIC ASSESSMENT</span>
         </div>
-        <div style={{display:"flex",flexDirection:"column",gap:5,marginBottom:26}}>
-          {SECS.map(s=>(<div key={s.id} style={{display:"flex",alignItems:"center",gap:10,background:C.white,borderLeft:`3px solid ${s.color}`,borderRadius:"0 10px 10px 0",padding:"8px 14px"}}><div style={{width:7,height:7,borderRadius:"50%",background:s.color,flexShrink:0}}/><div style={{flex:1}}><div style={{fontSize:9,fontWeight:700,letterSpacing:"0.2em",color:s.color}}>{s.title}</div><div style={{fontSize:10,color:C.inkL,marginTop:1}}>{s.sub}</div></div><div style={{fontSize:9,color:C.inkXL}}>5 QS</div></div>))}
+        <h1 style={{
+          fontFamily:"'Playfair Display',serif",
+          fontSize:"clamp(2.5rem,6vw,4.2rem)",
+          fontWeight:800,color:C.ink,lineHeight:.92,letterSpacing:"-0.02em",
+          textAlign:"center",marginBottom:"1rem"
+        }}>Creative<br/>Innovation<br/><span style={{color:C.gold,fontStyle:"italic"}}>Index</span></h1>
+        <p style={{fontSize:"0.82rem",color:C.inkM,lineHeight:1.8,textAlign:"center",maxWidth:400,margin:"0 auto 1.4rem"}}>
+          A multi-method assessment measuring how creative and innovative you truly are — with AI-powered analysis of your actual thinking.
+        </p>
+        <div style={{display:"flex",gap:8,marginBottom:"1.2rem"}}>
+          {[["25","Questions"],["5","Dimensions"],["~12","Minutes"]].map(([n,l])=>(
+            <div key={l} style={{background:C.white,border:`1.5px solid ${C.inkXL}`,borderRadius:14,padding:"0.9rem 1rem",textAlign:"center",flex:1}}>
+              <div style={{fontFamily:"'Playfair Display',serif",fontSize:"clamp(1.4rem,3vw,1.8rem)",fontWeight:800,color:C.gold,lineHeight:1}}>{n}</div>
+              <div style={{fontSize:"0.6rem",color:C.inkL,letterSpacing:"0.18em",marginTop:4,fontWeight:600}}>{l}</div>
+            </div>
+          ))}
         </div>
-        <button onClick={onStart} style={{width:"100%",background:C.ink,color:C.cream,border:"none",borderRadius:12,padding:"15px",fontSize:14,fontWeight:700,cursor:"pointer",letterSpacing:"0.08em",boxShadow:"0 6px 24px rgba(28,24,20,0.2)"}}>BEGIN ASSESSMENT →</button>
-        <p style={{textAlign:"center",fontSize:10,color:C.inkXL,marginTop:10,letterSpacing:"0.1em"}}>AI-POWERED · ~12 MINUTES</p>
+        <div style={{display:"flex",flexDirection:"column",gap:5,marginBottom:"1.4rem"}}>
+          {SECS.map(s=>(
+            <div key={s.id} style={{display:"flex",alignItems:"center",gap:10,background:C.white,borderLeft:`3px solid ${s.color}`,borderRadius:"0 10px 10px 0",padding:"0.5rem 0.9rem"}}>
+              <div style={{width:7,height:7,borderRadius:"50%",background:s.color,flexShrink:0}}/>
+              <div style={{flex:1}}>
+                <div style={{fontSize:"0.6rem",fontWeight:700,letterSpacing:"0.2em",color:s.color}}>{s.title}</div>
+                <div style={{fontSize:"0.65rem",color:C.inkL,marginTop:1}}>{s.sub}</div>
+              </div>
+              <div style={{fontSize:"0.6rem",color:C.inkXL}}>5 QS</div>
+            </div>
+          ))}
+        </div>
+        <button onClick={onStart} style={{
+          width:"100%",background:C.ink,color:C.cream,border:"none",borderRadius:12,
+          padding:"0.9rem",fontSize:"0.88rem",fontWeight:700,cursor:"pointer",
+          letterSpacing:"0.08em",boxShadow:"0 6px 24px rgba(28,24,20,0.2)"
+        }}>BEGIN ASSESSMENT →</button>
+        <p style={{textAlign:"center",fontSize:"0.6rem",color:C.inkXL,marginTop:10,letterSpacing:"0.1em"}}>AI-POWERED · ~12 MINUTES</p>
       </div>
     </div>
   );
 }
 
+// ── SECTION INTRO ──────────────────────────────────────────────────────────────
 function SecIntro({sec,onGo}) {
   return (
-    <div style={{height:"100vh",background:`linear-gradient(150deg,#fdf9f3 0%,#f0ebe0 100%)`,display:"flex",alignItems:"center",justifyContent:"center",padding:"40px 24px"}}>
-      <div style={{maxWidth:480,width:"100%",textAlign:"center"}} className="fu">
-        <div style={{width:"100%",height:100,borderRadius:16,overflow:"hidden",marginBottom:24,border:`1px solid ${sec.color}20`}}>{SecIllus[sec.id]}</div>
-        <div style={{fontSize:9,letterSpacing:"0.38em",color:sec.color,fontWeight:700,marginBottom:10}}>SECTION {sec.id} OF 5</div>
-        <h2 style={{fontFamily:"'Playfair Display',serif",fontSize:"clamp(24px,6vw,36px)",fontWeight:800,color:C.ink,lineHeight:1.1,marginBottom:12}}>{sec.title}</h2>
-        <p style={{fontSize:13,color:C.inkM,lineHeight:1.8,maxWidth:360,margin:"0 auto 28px"}}>{sec.sub}</p>
-        <button onClick={onGo} style={{background:sec.color,color:"#fff",border:"none",borderRadius:12,padding:"13px 36px",fontSize:14,fontWeight:700,cursor:"pointer",letterSpacing:"0.08em",boxShadow:`0 6px 20px ${sec.color}40`}}>START SECTION →</button>
+    <div style={{
+      height:"100vh", width:"100vw",
+      background:`linear-gradient(150deg,#fdf9f3 0%,#f0ebe0 100%)`,
+      display:"flex", alignItems:"center", justifyContent:"center", padding:"4vh 24px"
+    }}>
+      <div style={{maxWidth:"min(520px,92vw)", width:"100%", textAlign:"center"}} className="fu">
+        <div style={{width:"100%",height:"clamp(80px,12vh,120px)",borderRadius:16,overflow:"hidden",marginBottom:"2.5vh",border:`1px solid ${sec.color}20`}}>{SecIllus[sec.id]}</div>
+        <div style={{fontSize:"0.6rem",letterSpacing:"0.38em",color:sec.color,fontWeight:700,marginBottom:"0.8rem"}}>SECTION {sec.id} OF 5</div>
+        <h2 style={{
+          fontFamily:"'Playfair Display',serif",
+          fontSize:"clamp(1.5rem,4vw,2.4rem)",
+          fontWeight:800, color:C.ink, lineHeight:1.1, marginBottom:"0.8rem"
+        }}>{sec.title}</h2>
+        <p style={{fontSize:"0.85rem",color:C.inkM,lineHeight:1.8,maxWidth:360,margin:"0 auto 2.5vh"}}>{sec.sub}</p>
+        <button onClick={onGo} style={{
+          background:sec.color, color:"#fff", border:"none", borderRadius:12,
+          padding:"0.85rem 2.5rem", fontSize:"0.88rem", fontWeight:700,
+          cursor:"pointer", letterSpacing:"0.08em",
+          boxShadow:`0 6px 20px ${sec.color}40`
+        }}>START SECTION →</button>
       </div>
     </div>
   );
 }
 
+// ── QUESTION SCREEN — much bigger, clearer layout ─────────────────────────────
 function QScreen({q,qi,total,answers,setAnswer,onNext,onBack,canGo}) {
-  const sec=SECS.find(s=>s.id===q.s);
-  const typeLabel={open:"OPEN-ENDED · AI SCORED",rat:"REMOTE ASSOCIATES TEST",likert:"SELF-ASSESSMENT",mcq:"BEHAVIORAL",scenario:"SCENARIO CHALLENGE"}[q.type];
-  const secQs=Qs.filter(x=>x.s===q.s);
-  const posInSec=secQs.findIndex(x=>x.id===q.id)+1;
-  const autoTypes=["likert","mcq","rat","scenario"];
-  const handleSelect=(val)=>{setAnswer(val);if(autoTypes.includes(q.type))setTimeout(()=>onNext(),320);};
+  const sec = SECS.find(s=>s.id===q.s);
+  const typeLabel = {open:"OPEN-ENDED · AI SCORED",rat:"REMOTE ASSOCIATES TEST",likert:"SELF-ASSESSMENT",mcq:"BEHAVIORAL",scenario:"SCENARIO CHALLENGE"}[q.type];
+  const secQs = Qs.filter(x=>x.s===q.s);
+  const posInSec = secQs.findIndex(x=>x.id===q.id)+1;
+  const autoTypes = ["likert","mcq","rat","scenario"];
+  const handleSelect = (val) => { setAnswer(val); if(autoTypes.includes(q.type)) setTimeout(()=>onNext(), 320); };
+
   return (
-    <div style={{height:"100vh",background:`linear-gradient(170deg,#fdf9f3 0%,#f2ede5 100%)`,display:"flex",flexDirection:"column"}}>
-      <div style={{height:3,background:C.inkXL,flexShrink:0}}><div style={{height:"100%",width:`${(qi+1)/total*100}%`,background:`linear-gradient(to right,${sec.color}90,${sec.color})`,transition:"width .4s ease"}}/></div>
-      <div style={{padding:"11px 22px",display:"flex",justifyContent:"space-between",alignItems:"center",borderBottom:`1px solid ${C.inkXL}50`,background:"rgba(253,249,243,0.9)",flexShrink:0}}>
-        <div style={{display:"flex",alignItems:"center",gap:8}}><div style={{width:8,height:8,borderRadius:"50%",background:sec.color}}/><span style={{fontSize:10,fontWeight:700,letterSpacing:"0.22em",color:sec.color}}>{sec.title}</span></div>
-        <div style={{display:"flex",alignItems:"center",gap:10}}><span style={{fontSize:10,color:C.inkL}}>{posInSec} of {secQs.length}</span><span style={{fontSize:11,fontWeight:700,color:C.inkM}}>{qi+1}<span style={{color:C.inkXL}}>/{total}</span></span></div>
+    <div style={{
+      height:"100vh", width:"100vw",
+      background:`linear-gradient(170deg,#fdf9f3 0%,#f2ede5 100%)`,
+      display:"flex", flexDirection:"column"
+    }}>
+      {/* Progress bar */}
+      <div style={{height:4,background:C.inkXL,flexShrink:0}}>
+        <div style={{height:"100%",width:`${(qi+1)/total*100}%`,background:`linear-gradient(to right,${sec.color}90,${sec.color})`,transition:"width .4s ease"}}/>
       </div>
-      <div style={{flex:1,overflowY:"auto",padding:"24px 22px 12px",display:"flex",justifyContent:"center"}}>
-        <div style={{width:"100%",maxWidth:560}} key={q.id} className="fu">
-          <div style={{width:"100%",height:76,borderRadius:14,overflow:"hidden",marginBottom:18,background:C.white,border:`1px solid ${sec.color}20`}}>
-            {q.type==="scenario"
-              ?<div style={{height:"100%",display:"flex",alignItems:"center",justifyContent:"center",gap:16,background:`linear-gradient(135deg,${sec.color}08,${sec.color}15)`}}><span style={{fontSize:34}}>{q.scene}</span><div><div style={{fontSize:8,letterSpacing:"0.3em",color:sec.color,fontWeight:700}}>{q.sceneLabel}</div><div style={{fontSize:11,color:C.inkM,marginTop:3}}>Scenario Challenge</div></div></div>
-              :<div style={{height:"100%",display:"flex",alignItems:"center",justifyContent:"center",padding:"0 18px",background:`linear-gradient(135deg,${sec.color}05,${sec.color}12)`}}><div style={{width:110,height:66,flexShrink:0}}>{q.illus}</div><div style={{marginLeft:14,borderLeft:`1.5px solid ${sec.color}25`,paddingLeft:14}}><div style={{fontSize:9,letterSpacing:"0.3em",color:sec.color,fontWeight:700}}>{typeLabel}</div><div style={{fontSize:11,color:C.inkM,marginTop:3,lineHeight:1.5}}>{q.type==="open"?"Evaluated by AI for originality & depth":q.type==="rat"?"Find the single hidden connection":"Respond honestly"}</div></div></div>
-            }
-          </div>
-          <div style={{fontSize:9,letterSpacing:"0.28em",color:sec.color,marginBottom:10,fontWeight:700}}>Q{qi+1} · {typeLabel}</div>
-          <h2 style={{fontFamily:"'Playfair Display',serif",fontSize:"clamp(16px,3vw,22px)",fontWeight:700,color:C.ink,lineHeight:1.45,marginBottom:20}}>{q.text}</h2>
-          {q.type==="rat"&&(<div style={{display:"flex",gap:8,marginBottom:20,flexWrap:"wrap"}}>{q.words.map(w=>(<div key={w} style={{background:C.white,border:`2px solid ${sec.color}60`,borderRadius:10,padding:"9px 18px",fontSize:16,fontWeight:800,color:sec.color,letterSpacing:"0.12em"}}>{w}</div>))}</div>)}
-          {q.type==="open"&&q.hint&&(<div style={{background:`${sec.color}08`,borderLeft:`2.5px solid ${sec.color}`,borderRadius:"0 10px 10px 0",padding:"8px 12px",marginBottom:14,fontSize:12,color:sec.color,lineHeight:1.65,fontStyle:"italic"}}>💡 {q.hint}</div>)}
-          {q.type==="open"&&(<><textarea value={answers[q.id]||""} onChange={e=>setAnswer(e.target.value)} placeholder={q.ph} rows={6} style={{width:"100%",background:C.white,border:`1.5px solid ${C.inkXL}`,borderRadius:12,padding:"12px",color:C.ink,fontSize:14,lineHeight:1.75,resize:"none"}} onFocus={e=>e.target.style.borderColor=sec.color} onBlur={e=>e.target.style.borderColor=C.inkXL}/><div style={{fontSize:11,color:C.inkL,marginTop:6,display:"flex",justifyContent:"space-between"}}><span style={{fontStyle:"italic"}}>More specific & unexpected = higher score</span><span>{(answers[q.id]||"").split("\n").filter(l=>l.trim().length>2).length} ideas</span></div></>)}
-          {(q.type==="rat"||q.type==="mcq"||q.type==="scenario")&&(<div style={{display:"flex",flexDirection:"column",gap:7}}>{q.options.map((opt,i)=>{const val=q.type==="rat"?opt:i;const sel=answers[q.id]===val;return(<button key={i} onClick={()=>handleSelect(val)} style={{background:sel?C.white:"rgba(255,255,255,0.6)",border:`1.5px solid ${sel?sec.color:C.inkXL}`,borderRadius:10,padding:"11px 14px",color:sel?C.ink:C.inkM,fontSize:13,textAlign:"left",cursor:"pointer",fontWeight:sel?600:400,lineHeight:1.55,display:"flex",alignItems:"flex-start",gap:9}}><span style={{flexShrink:0,width:20,height:20,borderRadius:5,background:sel?sec.color:`${sec.color}15`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,fontWeight:800,color:sel?"#fff":sec.color}}>{String.fromCharCode(65+i)}</span>{opt}</button>);})}</div>)}
-          {q.type==="likert"&&(<div><div style={{display:"flex",gap:7,marginBottom:8}}>{[1,2,3,4,5].map(v=>{const sel=answers[q.id]===v;const colors=["#e55","#e88","#aaa",`${sec.color}90`,sec.color];return(<button key={v} onClick={()=>handleSelect(v)} style={{flex:1,height:52,background:sel?C.white:"rgba(255,255,255,0.5)",border:`1.5px solid ${sel?colors[v-1]:C.inkXL}`,borderRadius:10,color:sel?colors[v-1]:C.inkL,fontSize:18,fontWeight:700,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:2}}>{v}{sel&&<div style={{width:4,height:4,borderRadius:"50%",background:colors[v-1]}}/>}</button>);})}</div><div style={{display:"flex",justifyContent:"space-between"}}><span style={{fontSize:10,color:C.inkL,fontStyle:"italic"}}>Strongly Disagree</span><span style={{fontSize:10,color:C.inkL,fontStyle:"italic"}}>Strongly Agree</span></div></div>)}
+
+      {/* Top nav bar */}
+      <div style={{
+        padding:"0.6rem 1.5rem",
+        display:"flex", justifyContent:"space-between", alignItems:"center",
+        borderBottom:`1px solid ${C.inkXL}50`,
+        background:"rgba(253,249,243,0.95)", flexShrink:0
+      }}>
+        <div style={{display:"flex",alignItems:"center",gap:8}}>
+          <div style={{width:10,height:10,borderRadius:"50%",background:sec.color}}/>
+          <span style={{fontSize:"0.65rem",fontWeight:700,letterSpacing:"0.22em",color:sec.color}}>{sec.title}</span>
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:12}}>
+          <span style={{fontSize:"0.7rem",color:C.inkL}}>{posInSec} of {secQs.length}</span>
+          <span style={{fontSize:"0.75rem",fontWeight:700,color:C.inkM}}>{qi+1}<span style={{color:C.inkXL}}>/{total}</span></span>
         </div>
       </div>
-      <div style={{padding:"11px 22px",borderTop:`1px solid ${C.inkXL}50`,background:"rgba(253,249,243,0.95)",display:"flex",justifyContent:"space-between",alignItems:"center",flexShrink:0}}>
-        <button onClick={onBack} disabled={qi===0} style={{background:"transparent",border:`1.5px solid ${C.inkXL}`,borderRadius:8,padding:"9px 16px",color:qi===0?C.inkXL:C.inkM,cursor:qi===0?"default":"pointer",fontSize:12,fontWeight:500}}>← Back</button>
-        <div style={{display:"flex",gap:5}}>{SECS.map(s=>{const sQs=Qs.filter(x=>x.s===s.id);const active=sQs.some(x=>x.id===q.id);const done=sQs.every(x=>{const a=answers[x.id];return a!==undefined&&a!==null&&a!==""});return<div key={s.id} style={{width:22,height:3,borderRadius:2,background:done?s.color:active?`${s.color}45`:C.inkXL,transition:"background .3s"}}/>;})}</div>
-        <button onClick={onNext} disabled={!canGo} style={{background:canGo?sec.color:C.inkXL,border:"none",borderRadius:8,padding:"9px 18px",color:"#fff",cursor:canGo?"pointer":"default",fontSize:12,fontWeight:700,opacity:canGo?1:0.5}}>{qi===total-1?"Analyze →":"Next →"}</button>
+
+      {/* Question content — scrollable middle section */}
+      <div style={{flex:1,overflowY:"auto",padding:"clamp(16px,3vh,36px) clamp(16px,4vw,48px)",display:"flex",justifyContent:"center",alignItems:"flex-start"}}>
+        <div style={{width:"100%", maxWidth:"min(700px,95vw)"}} key={q.id} className="fu">
+
+          {/* Question type banner */}
+          <div style={{
+            width:"100%", height:"clamp(70px,10vh,100px)",
+            borderRadius:14, overflow:"hidden", marginBottom:"clamp(14px,2.5vh,24px)",
+            background:C.white, border:`1px solid ${sec.color}20`
+          }}>
+            {q.type==="scenario"
+              ? <div style={{height:"100%",display:"flex",alignItems:"center",justifyContent:"center",gap:20,background:`linear-gradient(135deg,${sec.color}08,${sec.color}15)`}}>
+                  <span style={{fontSize:"clamp(28px,5vw,44px)"}}>{q.scene}</span>
+                  <div>
+                    <div style={{fontSize:"0.65rem",letterSpacing:"0.3em",color:sec.color,fontWeight:700}}>{q.sceneLabel}</div>
+                    <div style={{fontSize:"0.8rem",color:C.inkM,marginTop:4}}>Scenario Challenge</div>
+                  </div>
+                </div>
+              : <div style={{height:"100%",display:"flex",alignItems:"center",padding:"0 1.5rem",background:`linear-gradient(135deg,${sec.color}05,${sec.color}12)`, gap:"1rem"}}>
+                  <div style={{width:"clamp(60px,8vw,100px)",flexShrink:0}}>{q.illus}</div>
+                  <div style={{borderLeft:`1.5px solid ${sec.color}25`,paddingLeft:"1rem"}}>
+                    <div style={{fontSize:"0.6rem",letterSpacing:"0.3em",color:sec.color,fontWeight:700}}>{typeLabel}</div>
+                    <div style={{fontSize:"0.78rem",color:C.inkM,marginTop:4,lineHeight:1.5}}>
+                      {q.type==="open"?"Evaluated by AI for originality & depth":q.type==="rat"?"Find the single hidden connection":"Respond honestly — no right or wrong"}
+                    </div>
+                  </div>
+                </div>
+            }
+          </div>
+
+          {/* Question number + type label */}
+          <div style={{fontSize:"0.62rem",letterSpacing:"0.28em",color:sec.color,marginBottom:"0.6rem",fontWeight:700}}>
+            Q{qi+1} · {typeLabel}
+          </div>
+
+          {/* Main question text — LARGE & READABLE */}
+          <h2 style={{
+            fontFamily:"'Playfair Display',serif",
+            fontSize:"clamp(1.15rem,2.4vw,1.65rem)",
+            fontWeight:700, color:C.ink, lineHeight:1.5,
+            marginBottom:"clamp(14px,2.5vh,28px)"
+          }}>{q.text}</h2>
+
+          {/* RAT word chips */}
+          {q.type==="rat" && (
+            <div style={{display:"flex",gap:10,marginBottom:"1.5rem",flexWrap:"wrap"}}>
+              {q.words.map(w=>(
+                <div key={w} style={{
+                  background:C.white, border:`2.5px solid ${sec.color}60`,
+                  borderRadius:10, padding:"0.6rem 1.2rem",
+                  fontSize:"clamp(1rem,2vw,1.3rem)", fontWeight:800,
+                  color:sec.color, letterSpacing:"0.12em"
+                }}>{w}</div>
+              ))}
+            </div>
+          )}
+
+          {/* Hint for open questions */}
+          {q.type==="open" && q.hint && (
+            <div style={{
+              background:`${sec.color}08`, borderLeft:`3px solid ${sec.color}`,
+              borderRadius:"0 10px 10px 0", padding:"0.7rem 1rem",
+              marginBottom:"1rem", fontSize:"0.82rem", color:sec.color,
+              lineHeight:1.7, fontStyle:"italic"
+            }}>💡 {q.hint}</div>
+          )}
+
+          {/* Open textarea */}
+          {q.type==="open" && (
+            <>
+              <textarea
+                value={answers[q.id]||""}
+                onChange={e=>setAnswer(e.target.value)}
+                placeholder={q.ph}
+                rows={7}
+                style={{
+                  width:"100%", background:C.white,
+                  border:`1.5px solid ${C.inkXL}`, borderRadius:12,
+                  padding:"1rem", color:C.ink,
+                  fontSize:"clamp(0.85rem,1.5vw,1rem)",
+                  lineHeight:1.8, resize:"none"
+                }}
+                onFocus={e=>e.target.style.borderColor=sec.color}
+                onBlur={e=>e.target.style.borderColor=C.inkXL}
+              />
+              <div style={{fontSize:"0.72rem",color:C.inkL,marginTop:6,display:"flex",justifyContent:"space-between"}}>
+                <span style={{fontStyle:"italic"}}>More specific & unexpected = higher score</span>
+                <span>{(answers[q.id]||"").split("\n").filter(l=>l.trim().length>2).length} ideas</span>
+              </div>
+            </>
+          )}
+
+          {/* MCQ / RAT / Scenario options */}
+          {(q.type==="rat"||q.type==="mcq"||q.type==="scenario") && (
+            <div style={{display:"flex",flexDirection:"column",gap:"0.6rem"}}>
+              {q.options.map((opt,i)=>{
+                const val = q.type==="rat" ? opt : i;
+                const sel = answers[q.id]===val;
+                return (
+                  <button key={i} onClick={()=>handleSelect(val)} style={{
+                    background:sel?C.white:"rgba(255,255,255,0.65)",
+                    border:`1.5px solid ${sel?sec.color:C.inkXL}`,
+                    borderRadius:12, padding:"0.85rem 1rem",
+                    color:sel?C.ink:C.inkM,
+                    fontSize:"clamp(0.82rem,1.4vw,0.95rem)",
+                    textAlign:"left", cursor:"pointer",
+                    fontWeight:sel?600:400, lineHeight:1.6,
+                    display:"flex", alignItems:"flex-start", gap:10,
+                    boxShadow:sel?`0 2px 12px ${sec.color}25`:"none",
+                    transition:"all .15s"
+                  }}>
+                    <span style={{
+                      flexShrink:0, width:24, height:24, borderRadius:6,
+                      background:sel?sec.color:`${sec.color}15`,
+                      display:"flex", alignItems:"center", justifyContent:"center",
+                      fontSize:"0.65rem", fontWeight:800, color:sel?"#fff":sec.color
+                    }}>{String.fromCharCode(65+i)}</span>
+                    {opt}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Likert scale */}
+          {q.type==="likert" && (
+            <div>
+              <div style={{display:"flex",gap:"0.6rem",marginBottom:"0.6rem"}}>
+                {[1,2,3,4,5].map(v=>{
+                  const sel = answers[q.id]===v;
+                  const colors=["#e55","#e88","#aaa",`${sec.color}90`,sec.color];
+                  return (
+                    <button key={v} onClick={()=>handleSelect(v)} style={{
+                      flex:1, height:"clamp(52px,8vh,70px)",
+                      background:sel?C.white:"rgba(255,255,255,0.6)",
+                      border:`1.5px solid ${sel?colors[v-1]:C.inkXL}`,
+                      borderRadius:12,
+                      color:sel?colors[v-1]:C.inkL,
+                      fontSize:"clamp(1.1rem,2.5vw,1.4rem)", fontWeight:700,
+                      cursor:"pointer",
+                      display:"flex", alignItems:"center", justifyContent:"center",
+                      flexDirection:"column", gap:4,
+                      boxShadow:sel?`0 2px 12px ${colors[v-1]}30`:"none",
+                      transition:"all .15s"
+                    }}>
+                      {v}
+                      {sel && <div style={{width:5,height:5,borderRadius:"50%",background:colors[v-1]}}/>}
+                    </button>
+                  );
+                })}
+              </div>
+              <div style={{display:"flex",justifyContent:"space-between"}}>
+                <span style={{fontSize:"0.7rem",color:C.inkL,fontStyle:"italic"}}>Strongly Disagree</span>
+                <span style={{fontSize:"0.7rem",color:C.inkL,fontStyle:"italic"}}>Strongly Agree</span>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Bottom nav */}
+      <div style={{
+        padding:"0.75rem 1.5rem",
+        borderTop:`1px solid ${C.inkXL}50`,
+        background:"rgba(253,249,243,0.97)",
+        display:"flex", justifyContent:"space-between", alignItems:"center",
+        flexShrink:0
+      }}>
+        <button onClick={onBack} disabled={qi===0} style={{
+          background:"transparent",
+          border:`1.5px solid ${C.inkXL}`,
+          borderRadius:8, padding:"0.55rem 1rem",
+          color:qi===0?C.inkXL:C.inkM,
+          cursor:qi===0?"default":"pointer",
+          fontSize:"0.78rem", fontWeight:500
+        }}>← Back</button>
+
+        {/* Section progress dots */}
+        <div style={{display:"flex",gap:6}}>
+          {SECS.map(s=>{
+            const sQs=Qs.filter(x=>x.s===s.id);
+            const active=sQs.some(x=>x.id===q.id);
+            const done=sQs.every(x=>{const a=answers[x.id];return a!==undefined&&a!==null&&a!==""});
+            return <div key={s.id} style={{width:22,height:3,borderRadius:2,background:done?s.color:active?`${s.color}45`:C.inkXL,transition:"background .3s"}}/>;
+          })}
+        </div>
+
+        <button onClick={onNext} disabled={!canGo} style={{
+          background:canGo?sec.color:C.inkXL,
+          border:"none", borderRadius:8,
+          padding:"0.55rem 1.2rem",
+          color:"#fff",
+          cursor:canGo?"pointer":"default",
+          fontSize:"0.78rem", fontWeight:700,
+          opacity:canGo?1:0.5,
+          transition:"all .15s"
+        }}>{qi===total-1?"Analyze →":"Next →"}</button>
       </div>
     </div>
   );
 }
 
+// ── ANALYZING ─────────────────────────────────────────────────────────────────
 function Analyzing() {
   const msgs=["Evaluating ideational fluency…","Measuring associative range…","Calibrating originality scores…","Analyzing cross-domain thinking…","Saving your profile to database…","Composing personalised insights…"];
   const [idx,setIdx]=useState(0);
   useEffect(()=>{const t=setInterval(()=>setIdx(i=>(i+1)%msgs.length),2000);return()=>clearInterval(t);},[]);
   return (
-    <div style={{height:"100vh",background:`linear-gradient(150deg,#fdf9f3 0%,#ede6da 100%)`,display:"flex",alignItems:"center",justifyContent:"center",padding:24}}>
+    <div style={{
+      height:"100vh", width:"100vw",
+      background:`linear-gradient(150deg,#fdf9f3 0%,#ede6da 100%)`,
+      display:"flex", alignItems:"center", justifyContent:"center", padding:24
+    }}>
       <div style={{textAlign:"center",maxWidth:380}} className="fi">
         <div style={{position:"relative",width:130,height:130,margin:"0 auto 40px"}}>
-          {[[65,65,18],[18,18,9],[112,22,7],[22,108,8],[112,104,10],[65,9,6]].map(([x,y,r],i)=>(<div key={i} style={{position:"absolute",left:x-r/2,top:y-r/2,width:r,height:r,borderRadius:"50%",background:[C.s1,C.s2,C.s3,C.s4,C.s5,C.gold][i%6],opacity:.25+i*.05,animation:`pulse ${1.8+i*.3}s ease-in-out infinite`,animationDelay:`${i*.2}s`}}/>))}
+          {[[65,65,18],[18,18,9],[112,22,7],[22,108,8],[112,104,10],[65,9,6]].map(([x,y,r],i)=>(
+            <div key={i} style={{position:"absolute",left:x-r/2,top:y-r/2,width:r,height:r,borderRadius:"50%",background:[C.s1,C.s2,C.s3,C.s4,C.s5,C.gold][i%6],opacity:.25+i*.05,animation:`pulse ${1.8+i*.3}s ease-in-out infinite`,animationDelay:`${i*.2}s`}}/>
+          ))}
           <div style={{position:"absolute",inset:28,borderRadius:"50%",border:`1.5px solid ${C.gold}30`,animation:"spinR 10s linear infinite"}}/>
           <div style={{position:"absolute",inset:42,borderRadius:"50%",border:`1.5px solid ${C.gold}50`,animation:"spinR 7s linear infinite reverse"}}/>
-          <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{fontFamily:"'Playfair Display',serif",fontSize:20,color:C.gold,opacity:.8}}>✦</div></div>
+          <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center"}}>
+            <div style={{fontFamily:"'Playfair Display',serif",fontSize:20,color:C.gold,opacity:.8}}>✦</div>
+          </div>
         </div>
-        <div style={{fontSize:9,letterSpacing:"0.42em",color:C.gold,marginBottom:12,fontWeight:700}}>AI ANALYSIS IN PROGRESS</div>
-        <h2 style={{fontFamily:"'Playfair Display',serif",fontSize:24,fontWeight:800,color:C.ink,lineHeight:1.3,marginBottom:10}}>Mapping your<br/>creative signature</h2>
-        <p style={{fontSize:12,color:C.inkM,lineHeight:1.8,maxWidth:300,margin:"0 auto 24px"}}>Claude is evaluating your open-ended responses for originality, flexibility, and depth.</p>
-        <div key={idx} className="fi" style={{fontSize:12,color:C.gold,fontStyle:"italic",minHeight:18}}>{msgs[idx]}</div>
+        <div style={{fontSize:"0.6rem",letterSpacing:"0.42em",color:C.gold,marginBottom:12,fontWeight:700}}>AI ANALYSIS IN PROGRESS</div>
+        <h2 style={{fontFamily:"'Playfair Display',serif",fontSize:"1.5rem",fontWeight:800,color:C.ink,lineHeight:1.3,marginBottom:10}}>Mapping your<br/>creative signature</h2>
+        <p style={{fontSize:"0.82rem",color:C.inkM,lineHeight:1.8,maxWidth:300,margin:"0 auto 24px"}}>Claude is evaluating your open-ended responses for originality, flexibility, and depth.</p>
+        <div key={idx} className="fi" style={{fontSize:"0.82rem",color:C.gold,fontStyle:"italic",minHeight:20}}>{msgs[idx]}</div>
       </div>
     </div>
   );
 }
 
 // ── DASHBOARD PANELS ───────────────────────────────────────────────────────────
-
 function DashPanel({title, children, style={}}) {
   return (
     <div style={{background:C.white,border:"1.5px solid #c8c4be",borderRadius:6,overflow:"hidden",display:"flex",flexDirection:"column",boxShadow:"0 2px 12px rgba(0,0,0,0.07)",...style}}>
-      <div style={{background:C.navy,color:"#fff",fontSize:10,fontWeight:700,letterSpacing:"0.14em",textAlign:"center",padding:"6px 10px",textTransform:"uppercase",flexShrink:0}}>{title}</div>
+      <div style={{background:C.navy,color:"#fff",fontSize:"0.6rem",fontWeight:700,letterSpacing:"0.14em",textAlign:"center",padding:"5px 10px",textTransform:"uppercase",flexShrink:0}}>{title}</div>
       <div style={{flex:1,minHeight:0,overflow:"hidden"}}>{children}</div>
     </div>
   );
@@ -939,10 +1087,7 @@ function Panel2({dims}) {
     [0.50, 0.68, 0.78, 0.55, 0.82, 1.00],
   ];
   const lines = dims.map((d,i) => ({
-    color: DIM.colors[i],
-    abbr: DIM.abbr[i],
-    fullName: DIM.short[i],
-    score: d,
+    color: DIM.colors[i], abbr: DIM.abbr[i], fullName: DIM.short[i], score: d,
     pts: seeds[i].map(s => Math.round(Math.min(100, Math.max(4, d * s)))),
   }));
   const avgPts = [47, 52, 49, 53, 50, 50];
@@ -1012,7 +1157,7 @@ function Panel3({aiData, dims, profile}) {
   const sorted=dims.map((d,i)=>({i,d})).sort((a,b)=>b.d-a.d);
   const top=sorted[0], low=sorted[sorted.length-1];
   return (
-    <div style={{height:"100%",padding:"9px 11px",display:"flex",flexDirection:"column",gap:6,overflowY:"auto"}}>
+    <div style={{height:"100%",padding:"9px 11px",display:"flex",flexDirection:"column",gap:4,overflowY:"auto"}} className="no-scroll">
       {aiData?.persona_type && (
         <div style={{display:"flex",justifyContent:"flex-end",flexShrink:0}}>
           <div style={{background:`${profile.color}14`,border:`1px solid ${profile.color}35`,borderRadius:10,padding:"2px 8px"}}><span style={{fontSize:7.5,fontWeight:700,color:profile.color,fontStyle:"italic"}}>{aiData.persona_type}</span></div>
@@ -1110,7 +1255,6 @@ function Panel4({dims, cii, profile}) {
   const low2=sorted.slice(-2);
   const avg=Math.round(dims.reduce((s,d)=>s+d,0)/dims.length);
   const aboveAvg=dims.filter((d,i)=>d>avgBenchmark[i]).length;
-
   const DIM_TIPS=[
     ["Write 30 uses for a pen daily to build fluency","Try SCAMPER on a product you use every day","10-min 'random word + problem' sprints"],
     ["Read one unrelated-field article each week","Connect 3 random nouns in one sentence daily","Keep a 'pattern journal' of cross-domain links"],
@@ -1119,35 +1263,16 @@ function Panel4({dims, cii, profile}) {
     ["Ship one small creative output every 7 days","Redesign one broken process in your life now","Track creative output daily — streaks compound"],
     ["Study one famous company pivot and extract why","Ask 'What if opposite were true?' on projects","Spend 20 min on a problem that feels unsolvable"],
   ];
-
   const dimIcons=["💡","🔗","🎲","🔭","⚙️","🚀"];
   const percentileText={"Top 5%":"Top 5%","Top 20%":"Top 20%","Above Average":"Top 35%","Average":"Top 50%","Developing":"Bottom 50%"}[profile.tag]||profile.tag;
   const shapeType=(()=>{const t=top2.map(x=>x.i);if(t.includes(0)&&t.includes(1))return{label:"Idea Generator",desc:"Strong at producing and connecting novel ideas rapidly."};if(t.includes(2)&&t.includes(3))return{label:"Bold Visionary",desc:"High tolerance for risk combined with strong future-thinking."};if(t.includes(4)&&t.includes(5))return{label:"Creative Executor",desc:"Translates creative thinking into real-world action."};if(t.includes(3)&&t.includes(5))return{label:"Innovation Driver",desc:"Vision + bold scenario thinking — you drive new directions."};if(t.includes(0)&&t.includes(5))return{label:"Creative Maverick",desc:"Divergent thinker who approaches hard problems unconventionally."};return{label:"Balanced Creator",desc:"Relatively even creative profile across all dimensions."};})();
-
-  const CustomTooltip=({active,payload})=>{
-    if(!active||!payload?.length) return null;
-    const subj=payload[0]?.payload?.subject;
-    const idx=DIM.abbr.indexOf(subj);
-    const your=payload.find(p=>p.dataKey==="score")?.value;
-    const avgV=payload.find(p=>p.dataKey==="avg")?.value;
-    const diff=your-avgV;
-    return(
-      <div style={{background:C.white,border:`1px solid ${C.inkXL}`,borderRadius:7,padding:"6px 9px",fontSize:8.5,boxShadow:"0 3px 10px rgba(0,0,0,0.1)",minWidth:120}}>
-        <div style={{fontWeight:700,color:idx>=0?DIM.colors[idx]:C.ink,marginBottom:3}}>{idx>=0?DIM.short[idx]:subj}</div>
-        <div style={{color:C.inkL}}>You: <b style={{color:idx>=0?DIM.colors[idx]:C.ink}}>{your}</b> · Avg: <b>{avgV}</b> · <b style={{color:diff>=0?C.s3:C.s4}}>{diff>=0?"+":""}{diff}</b></div>
-      </div>
-    );
-  };
-
+  const CustomTooltip=({active,payload})=>{if(!active||!payload?.length) return null;const subj=payload[0]?.payload?.subject;const idx=DIM.abbr.indexOf(subj);const your=payload.find(p=>p.dataKey==="score")?.value;const avgV=payload.find(p=>p.dataKey==="avg")?.value;const diff=your-avgV;return(<div style={{background:C.white,border:`1px solid ${C.inkXL}`,borderRadius:7,padding:"6px 9px",fontSize:8.5,boxShadow:"0 3px 10px rgba(0,0,0,0.1)",minWidth:120}}><div style={{fontWeight:700,color:idx>=0?DIM.colors[idx]:C.ink,marginBottom:3}}>{idx>=0?DIM.short[idx]:subj}</div><div style={{color:C.inkL}}>You: <b style={{color:idx>=0?DIM.colors[idx]:C.ink}}>{your}</b> · Avg: <b>{avgV}</b> · <b style={{color:diff>=0?C.s3:C.s4}}>{diff>=0?"+":""}{diff}</b></div></div>);};
   return (
     <div style={{display:"flex",height:"100%"}}>
-      <div style={{width:148,flexShrink:0,display:"flex",flexDirection:"column",padding:"9px 10px",borderRight:`1px solid ${C.inkXL}50`,overflowY:"hidden",gap:0}}>
+      <div style={{width:148,flexShrink:0,display:"flex",flexDirection:"column",padding:"1px 2px",borderRight:`1px solid ${C.inkXL}50`,overflowY:"auto",gap:0,fontSize:"0.9em"}}className="no-scroll">
         <div style={{marginBottom:8}}>
           <div style={{fontSize:7,color:C.inkL,letterSpacing:"0.1em",marginBottom:1}}>OVERALL CII SCORE</div>
-          <div style={{display:"flex",alignItems:"baseline",gap:4}}>
-            <div style={{fontFamily:"'Playfair Display',serif",fontSize:30,fontWeight:800,color:profile.color,lineHeight:1}}>{cii}</div>
-            <div style={{fontSize:7.5,color:C.inkL}}>/100</div>
-          </div>
+          <div style={{display:"flex",alignItems:"baseline",gap:4}}><div style={{fontFamily:"'Playfair Display',serif",fontSize:30,fontWeight:800,color:profile.color,lineHeight:1}}>{cii}</div><div style={{fontSize:7.5,color:C.inkL}}>/100</div></div>
           <div style={{display:"flex",gap:3,marginTop:3,flexWrap:"wrap"}}>
             <div style={{background:`${profile.color}15`,border:`1px solid ${profile.color}35`,borderRadius:9,padding:"1px 6px"}}><span style={{fontSize:7,fontWeight:700,color:profile.color}}>{percentileText}</span></div>
             <div style={{background:`${C.inkXL}50`,borderRadius:9,padding:"1px 6px"}}><span style={{fontSize:7,color:C.inkM}}>Avg {avg}</span></div>
@@ -1161,41 +1286,17 @@ function Panel4({dims, cii, profile}) {
         </div>
         <div style={{borderTop:`1px dashed ${C.inkXL}`,paddingTop:7,marginBottom:7}}>
           <div style={{fontSize:7,color:C.inkL,letterSpacing:"0.1em",marginBottom:5}}>TOP DIMENSIONS</div>
-          {top2.map(({i,d})=>(
-            <div key={i} style={{marginBottom:6}}>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:1.5}}>
-                <span style={{fontSize:8,color:DIM.colors[i],fontWeight:700}}>{DIM.short[i]}</span>
-                <span style={{fontFamily:"'Playfair Display',serif",fontSize:14,fontWeight:800,color:DIM.colors[i]}}>{d}</span>
-              </div>
-              <div style={{height:2.5,background:`${DIM.colors[i]}18`,borderRadius:2,overflow:"hidden",marginBottom:1.5}}>
-                <div style={{height:"100%",width:`${d}%`,background:DIM.colors[i],borderRadius:2,transition:"width 1.2s cubic-bezier(.22,1,.36,1)"}}/>
-              </div>
-              <div style={{fontSize:6.5,color:d>avgBenchmark[i]?C.s3:C.s4,textAlign:"right"}}>{d>avgBenchmark[i]?"+":""}{d-avgBenchmark[i]} vs avg</div>
-            </div>
-          ))}
+          {top2.map(({i,d})=>(<div key={i} style={{marginBottom:6}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:1.5}}><span style={{fontSize:8,color:DIM.colors[i],fontWeight:700}}>{DIM.short[i]}</span><span style={{fontFamily:"'Playfair Display',serif",fontSize:14,fontWeight:800,color:DIM.colors[i]}}>{d}</span></div><div style={{height:2.5,background:`${DIM.colors[i]}18`,borderRadius:2,overflow:"hidden",marginBottom:1.5}}><div style={{height:"100%",width:`${d}%`,background:DIM.colors[i],borderRadius:2,transition:"width 1.2s cubic-bezier(.22,1,.36,1)"}}/></div><div style={{fontSize:6.5,color:d>avgBenchmark[i]?C.s3:C.s4,textAlign:"right"}}>{d>avgBenchmark[i]?"+":""}{d-avgBenchmark[i]} vs avg</div></div>))}
         </div>
         <div style={{borderTop:`1px dashed ${C.inkXL}`,paddingTop:7,marginBottom:7}}>
           <div style={{fontSize:7,color:C.inkL,letterSpacing:"0.1em",marginBottom:5}}>GROWTH EDGE</div>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:1.5}}>
-            <span style={{fontSize:8,color:DIM.colors[low1.i],fontWeight:700}}>{DIM.short[low1.i]}</span>
-            <span style={{fontFamily:"'Playfair Display',serif",fontSize:14,fontWeight:800,color:DIM.colors[low1.i]}}>{low1.d}</span>
-          </div>
-          <div style={{height:2.5,background:`${DIM.colors[low1.i]}18`,borderRadius:2,overflow:"hidden",marginBottom:1.5}}>
-            <div style={{height:"100%",width:`${low1.d}%`,background:DIM.colors[low1.i],borderRadius:2}}/>
-          </div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:1.5}}><span style={{fontSize:8,color:DIM.colors[low1.i],fontWeight:700}}>{DIM.short[low1.i]}</span><span style={{fontFamily:"'Playfair Display',serif",fontSize:14,fontWeight:800,color:DIM.colors[low1.i]}}>{low1.d}</span></div>
+          <div style={{height:2.5,background:`${DIM.colors[low1.i]}18`,borderRadius:2,overflow:"hidden",marginBottom:1.5}}><div style={{height:"100%",width:`${low1.d}%`,background:DIM.colors[low1.i],borderRadius:2}}/></div>
           <div style={{fontSize:6.5,color:C.s4,textAlign:"right"}}>{low1.d-avgBenchmark[low1.i]} vs avg</div>
         </div>
         <div style={{borderTop:`1px dashed ${C.inkXL}`,paddingTop:7}}>
           <div style={{fontSize:7,color:C.inkL,letterSpacing:"0.1em",marginBottom:5}}>ALL DIMENSIONS</div>
-          {dims.map((d,i)=>(
-            <div key={i} style={{display:"flex",alignItems:"center",gap:4,marginBottom:4}}>
-              <div style={{width:5,height:5,borderRadius:"50%",background:DIM.colors[i],flexShrink:0}}/>
-              <span style={{fontSize:7,color:C.inkM,flex:1}}>{DIM.abbr[i]}</span>
-              <div style={{width:30,height:2.5,background:`${DIM.colors[i]}18`,borderRadius:1,overflow:"hidden"}}><div style={{width:`${d}%`,height:"100%",background:DIM.colors[i],borderRadius:1}}/></div>
-              <span style={{fontSize:7,fontWeight:700,color:DIM.colors[i],width:18,textAlign:"right"}}>{d}</span>
-              <span style={{fontSize:6,color:d>avgBenchmark[i]?C.s3:C.s4,width:16,textAlign:"right",fontWeight:600}}>{d>avgBenchmark[i]?"+":""}{d-avgBenchmark[i]}</span>
-            </div>
-          ))}
+          {dims.map((d,i)=>(<div key={i} style={{display:"flex",alignItems:"center",gap:4,marginBottom:4}}><div style={{width:5,height:5,borderRadius:"50%",background:DIM.colors[i],flexShrink:0}}/><span style={{fontSize:7,color:C.inkM,flex:1}}>{DIM.abbr[i]}</span><div style={{width:30,height:2.5,background:`${DIM.colors[i]}18`,borderRadius:1,overflow:"hidden"}}><div style={{width:`${d}%`,height:"100%",background:DIM.colors[i],borderRadius:1}}/></div><span style={{fontSize:7,fontWeight:700,color:DIM.colors[i],width:18,textAlign:"right"}}>{d}</span><span style={{fontSize:6,color:d>avgBenchmark[i]?C.s3:C.s4,width:16,textAlign:"right",fontWeight:600}}>{d>avgBenchmark[i]?"+":""}{d-avgBenchmark[i]}</span></div>))}
         </div>
       </div>
       <div style={{flex:"0 0 40%",display:"flex",flexDirection:"column",borderRight:`1px solid ${C.inkXL}30`}}>
@@ -1215,38 +1316,8 @@ function Panel4({dims, cii, profile}) {
           <div style={{display:"flex",alignItems:"center",gap:4}}><svg width={14} height={4}><line x1="0" y1="2" x2="14" y2="2" stroke={C.inkXL} strokeWidth={1.2} strokeDasharray="3 2"/></svg><span style={{fontSize:7.5,color:C.inkM}}>Avg</span></div>
         </div>
       </div>
-      <div style={{flex:1,display:"flex",flexDirection:"column",padding:"8px 10px",gap:8,overflowY:"hidden"}}>
-        {low2.map(({i,d})=>{
-          const color=DIM.colors[i];
-          const tips=DIM_TIPS[i];
-          const pct=Math.round(d);
-          const diff=avgBenchmark[i]-d;
-          return (
-            <div key={i} style={{flex:1,border:`1.5px solid ${color}40`,borderRadius:10,overflow:"hidden",display:"flex",background:C.white,minHeight:0}}>
-              <div style={{width:100,flexShrink:0,background:`linear-gradient(160deg,${color}20,${color}08)`,borderRight:`1px solid ${color}30`,padding:"10px 9px",display:"flex",flexDirection:"column",justifyContent:"center",gap:4}}>
-                <div style={{display:"flex",alignItems:"center",gap:5}}><span style={{fontSize:13}}>{dimIcons[i]}</span><span style={{fontSize:8,fontWeight:800,color,lineHeight:1.1}}>{DIM.short[i]}</span></div>
-                <div style={{fontSize:6.5,color:C.inkL,lineHeight:1.3}}>{DIM.descs[i]}</div>
-                <div>
-                  <div style={{display:"flex",alignItems:"baseline",gap:2,marginBottom:3}}><span style={{fontFamily:"'Playfair Display',serif",fontSize:22,fontWeight:800,color,lineHeight:1}}>{pct}</span><span style={{fontSize:6.5,color:C.inkL}}>/100</span></div>
-                  <div style={{height:4,background:`${color}18`,borderRadius:3,overflow:"hidden",position:"relative",marginBottom:2}}>
-                    <div style={{position:"absolute",inset:0,width:`${pct}%`,background:`linear-gradient(to right,${color}80,${color})`,borderRadius:3}}/>
-                    <div style={{position:"absolute",top:0,bottom:0,left:`${avgBenchmark[i]}%`,width:1.5,background:C.inkM,opacity:0.5}}/>
-                  </div>
-                  <div style={{fontSize:6.5,fontWeight:700,color:diff>0?C.s4:C.s3}}>{diff>0?`↓ ${diff} below avg`:`↑ ${-diff} above avg`}</div>
-                </div>
-              </div>
-              <div style={{flex:1,padding:"10px 11px",display:"flex",flexDirection:"column",justifyContent:"center",gap:7}}>
-                <div style={{fontSize:6.5,color:C.inkL,fontWeight:700,letterSpacing:"0.12em"}}>PRACTICE ACTIONS</div>
-                {tips.slice(0,2).map((tip,ti)=>(
-                  <div key={ti} style={{display:"flex",gap:7,alignItems:"flex-start"}}>
-                    <div style={{width:16,height:16,borderRadius:"50%",background:color,display:"flex",alignItems:"center",justifyContent:"center",fontSize:7.5,fontWeight:800,color:"#fff",flexShrink:0,marginTop:1}}>{ti+1}</div>
-                    <p style={{fontSize:8,color:C.ink,lineHeight:1.45,margin:0}}>{tip}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
-          );
-        })}
+      <div style={{flex:1,display:"flex",flexDirection:"column",padding:"8px 10px",gap:8,overflowY:"auto"}}>
+        {low2.map(({i,d})=>{const color=DIM.colors[i];const tips=DIM_TIPS[i];const pct=Math.round(d);const diff=avgBenchmark[i]-d;return(<div key={i} style={{flex:1,border:`1.5px solid ${color}40`,borderRadius:10,overflow:"hidden",display:"flex",background:C.white,minHeight:0}}><div style={{width:100,flexShrink:0,background:`linear-gradient(160deg,${color}20,${color}08)`,borderRight:`1px solid ${color}30`,padding:"10px 9px",display:"flex",flexDirection:"column",justifyContent:"center",gap:4}}><div style={{display:"flex",alignItems:"center",gap:5}}><span style={{fontSize:13}}>{dimIcons[i]}</span><span style={{fontSize:8,fontWeight:800,color,lineHeight:1.1}}>{DIM.short[i]}</span></div><div style={{fontSize:6.5,color:C.inkL,lineHeight:1.3}}>{DIM.descs[i]}</div><div><div style={{display:"flex",alignItems:"baseline",gap:2,marginBottom:3}}><span style={{fontFamily:"'Playfair Display',serif",fontSize:22,fontWeight:800,color,lineHeight:1}}>{pct}</span><span style={{fontSize:6.5,color:C.inkL}}>/100</span></div><div style={{height:4,background:`${color}18`,borderRadius:3,overflow:"hidden",position:"relative",marginBottom:2}}><div style={{position:"absolute",inset:0,width:`${pct}%`,background:`linear-gradient(to right,${color}80,${color})`,borderRadius:3}}/><div style={{position:"absolute",top:0,bottom:0,left:`${avgBenchmark[i]}%`,width:1.5,background:C.inkM,opacity:0.5}}/></div><div style={{fontSize:6.5,fontWeight:700,color:diff>0?C.s4:C.s3}}>{diff>0?`↓ ${diff} below avg`:`↑ ${-diff} above avg`}</div></div></div><div style={{flex:1,padding:"10px 11px",display:"flex",flexDirection:"column",justifyContent:"center",gap:7}}><div style={{fontSize:6.5,color:C.inkL,fontWeight:700,letterSpacing:"0.12em"}}>PRACTICE ACTIONS</div>{tips.slice(0,2).map((tip,ti)=>(<div key={ti} style={{display:"flex",gap:7,alignItems:"flex-start"}}><div style={{width:16,height:16,borderRadius:"50%",background:color,display:"flex",alignItems:"center",justifyContent:"center",fontSize:7.5,fontWeight:800,color:"#fff",flexShrink:0,marginTop:1}}>{ti+1}</div><p style={{fontSize:8,color:C.ink,lineHeight:1.45,margin:0}}>{tip}</p></div>))}</div></div>);})}
       </div>
     </div>
   );
@@ -1266,14 +1337,7 @@ function Panel5({dims, profile}) {
       </div>
       <div style={{flex:1,display:"flex",flexDirection:"column",justifyContent:"center",padding:"10px 8px 10px 4px",borderLeft:`1px solid ${C.inkXL}40`,gap:6}}>
         <div style={{fontSize:7,color:C.inkL,letterSpacing:"0.12em",fontWeight:600,marginBottom:1}}>EACH RING = ONE DIMENSION</div>
-        {rings.map((d,i)=>(
-          <div key={i} style={{display:"flex",alignItems:"center",gap:5}}>
-            <div style={{width:8,height:8,borderRadius:"50%",background:d.color,flexShrink:0,border:`2px solid ${d.color}40`}}/>
-            <span style={{fontSize:8,color:C.inkM,flex:1}}>{d.name}</span>
-            <div style={{width:28,height:3,background:`${d.color}20`,borderRadius:2,overflow:"hidden"}}><div style={{width:`${d.score}%`,height:"100%",background:d.color}}/></div>
-            <span style={{fontSize:8,fontWeight:700,color:d.color,width:20,textAlign:"right"}}>{d.score}</span>
-          </div>
-        ))}
+        {rings.map((d,i)=>(<div key={i} style={{display:"flex",alignItems:"center",gap:5}}><div style={{width:8,height:8,borderRadius:"50%",background:d.color,flexShrink:0,border:`2px solid ${d.color}40`}}/><span style={{fontSize:8,color:C.inkM,flex:1}}>{d.name}</span><div style={{width:28,height:3,background:`${d.color}20`,borderRadius:2,overflow:"hidden"}}><div style={{width:`${d.score}%`,height:"100%",background:d.color}}/></div><span style={{fontSize:8,fontWeight:700,color:d.color,width:20,textAlign:"right"}}>{d.score}</span></div>))}
         <div style={{borderTop:`1px dashed ${C.inkXL}`,paddingTop:6,marginTop:1}}>
           <div style={{fontSize:7,color:C.inkL,marginBottom:3}}>PROFILE SCALE</div>
           {PROFILES.map(p=>(<div key={p.name} style={{display:"flex",alignItems:"center",gap:3,marginBottom:2,opacity:profile.name===p.name?1:0.28}}><div style={{width:4,height:4,borderRadius:"50%",background:p.color,flexShrink:0}}/><span style={{fontSize:6.5,color:profile.name===p.name?p.color:C.inkM,fontWeight:profile.name===p.name?700:400}}>{p.range} · {p.name}</span></div>))}
@@ -1284,7 +1348,6 @@ function Panel5({dims, profile}) {
 }
 
 // ── RESULTS SCREEN ─────────────────────────────────────────────────────────────
-
 function Results({results, aiData, userInfo, userId, sessionId, onRetake}) {
   const {dims, cii} = results;
   const profile = getProfile(cii);
@@ -1292,7 +1355,6 @@ function Results({results, aiData, userInfo, userId, sessionId, onRetake}) {
   const [saveStatus, setSaveStatus]   = useState("idle");
   const dashboardRef = React.useRef(null);
 
-  // Auto-save: wait a tick so Recharts finishes painting, then capture
   useEffect(() => {
     if (!sessionId || !userId) return;
     const timer = setTimeout(async () => {
@@ -1301,12 +1363,11 @@ function Results({results, aiData, userInfo, userId, sessionId, onRetake}) {
         const canvas = await captureDashboard(dashboardRef.current);
         await dbSaveDashboardExport(sessionId, userId, canvas);
         setSaveStatus("saved");
-        console.log("[Results] Dashboard PNG saved ✓");
       } catch(e) {
         setSaveStatus("error:" + e.message);
         console.error("[Results] Full error:", e);
       }
-    }, 1500); // give charts time to animate in
+    }, 1500);
     return () => clearTimeout(timer);
   }, [sessionId, userId]);
 
@@ -1319,56 +1380,62 @@ function Results({results, aiData, userInfo, userId, sessionId, onRetake}) {
       link.download = `CII-Results-${userInfo?.name?.split(" ")[0] || "Report"}.png`;
       link.href = canvas.toDataURL("image/png");
       link.click();
-    } catch(e) {
-      console.error("[Download] Failed:", e);
-    }
+    } catch(e) { console.error("[Download] Failed:", e); }
     setDownloading(false);
   };
 
-  const statusBadge = {
-    idle:   null,
-    saving: <span style={{color:C.gold}}> · ⏳ Saving dashboard…</span>,
-    saved:  <span style={{color:C.s3}}> · ✓ All data saved</span>,
-  }[saveStatus] ?? <span style={{color:C.s4,fontSize:8}}> · ⚠ {saveStatus.replace("error:","")}</span>;
 
   return (
     <div
       ref={dashboardRef}
-      style={{height:"100vh",background:"#edeae4",padding:"10px 14px 8px",display:"flex",flexDirection:"column",gap:8}}
+      style={{
+        height:"100dvh", width:"100vw",
+        background:"#edeae4",
+        padding:"2px 8px 2px",
+        gap:4,
+        overflow:"hidden",
+        display:"flex", flexDirection:"column"
+      }}
       className="fi"
     >
+      {/* Header */}
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexShrink:0}}>
         <div>
-          <h1 style={{fontFamily:"'Playfair Display',serif",fontSize:18,fontWeight:800,color:C.ink,lineHeight:1.1}}>
+          <h1 style={{fontFamily:"'Playfair Display',serif",fontSize:"clamp(0.95rem,1.5vw,1.2rem)",fontWeight:800,color:C.ink,lineHeight:1.2}}>
             Creative Innovation Index
             {userInfo?.name && <span style={{color:C.gold}}> — {userInfo.name}</span>}
           </h1>
-          <p style={{fontSize:9,color:C.inkL,marginTop:2}}>
+          <p style={{fontSize:"clamp(0.65rem,0.9vw,0.8rem)",color:C.inkL,marginTop:3}}>
             {userInfo?.designation && userInfo?.organization ? `${userInfo.designation} · ${userInfo.organization} · ` : ""}
             Multi-dimensional psychometric assessment · AI-evaluated · 6 creativity dimensions
-            {statusBadge}
           </p>
         </div>
         <div style={{display:"flex",gap:8,alignItems:"center"}}>
-          <button onClick={handleDownload} disabled={downloading} style={{background:C.gold,border:"none",borderRadius:5,padding:"5px 12px",color:"#fff",fontSize:9,cursor:downloading?"default":"pointer",fontWeight:600,letterSpacing:"0.08em",whiteSpace:"nowrap"}}>
+          <button onClick={handleDownload} disabled={downloading} style={{background:C.gold,border:"none",borderRadius:5,padding:"5px 12px",color:"#fff",fontSize:"0.6rem",cursor:downloading?"default":"pointer",fontWeight:600,letterSpacing:"0.08em",whiteSpace:"nowrap"}}>
             {downloading ? "⏳ Capturing…" : "⬇ DOWNLOAD"}
           </button>
-          <button onClick={onRetake} style={{background:"transparent",border:`1.5px solid ${C.inkXL}`,borderRadius:5,padding:"5px 12px",color:C.inkM,fontSize:9,cursor:"pointer",fontWeight:600,letterSpacing:"0.08em",whiteSpace:"nowrap"}}>↩ RETAKE</button>
+          <button onClick={onRetake} style={{background:"transparent",border:`1.5px solid ${C.inkXL}`,borderRadius:5,padding:"5px 12px",color:C.inkM,fontSize:"0.6rem",cursor:"pointer",fontWeight:600,letterSpacing:"0.08em",whiteSpace:"nowrap"}}>↩ RETAKE</button>
         </div>
       </div>
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 0.85fr",gap:8,height:252,flexShrink:0}}>
+
+      {/* Top 3 panels */}
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"clamp(4px,0.8vw,10px)",flex:"0 0 auto",height:"calc(48vh - 40px)"}}>
         <DashPanel title="CII Score — Gauge & Strengths"><Panel1 cii={cii} profile={profile} dims={dims} aiData={aiData}/></DashPanel>
         <DashPanel title="Dimension Score Lines"><Panel2 dims={dims}/></DashPanel>
         <DashPanel title="Analysis"><Panel3 aiData={aiData} dims={dims} profile={profile}/></DashPanel>
       </div>
-      <div style={{display:"grid",gridTemplateColumns:"1.5fr 1fr",gap:8,height:232,flexShrink:0}}>
+
+      {/* Bottom 2 panels */}
+      <div style={{display:"grid",gridTemplateColumns:"1.5fr 1fr",gap:"clamp(4px,0.8vw,10px)",flex:"0 0 auto",height:"calc(54vh - 40px)"}}>
         <DashPanel title="Creative Profile Radar · Improvement Actions"><Panel4 dims={dims} cii={cii} profile={profile}/></DashPanel>
         <DashPanel title="Dimension Progress Rings"><Panel5 dims={dims} profile={profile}/></DashPanel>
       </div>
+
+      {/* Footer */}
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexShrink:0}}>
-        <p style={{fontSize:7.5,color:C.inkL,fontStyle:"italic"}}>Scores are AI-evaluated and psychometrically calibrated.</p>
+        <p style={{fontSize:"0.55rem",color:C.inkL,fontStyle:"italic"}}>Scores are AI-evaluated.</p>
         <div style={{display:"flex",alignItems:"center",gap:10}}>
-          {PROFILES.map(p=>(<div key={p.name} style={{display:"flex",alignItems:"center",gap:3,opacity:profile.name===p.name?1:0.3}}><div style={{width:6,height:6,borderRadius:"50%",background:p.color}}/><span style={{fontSize:7,color:p.color,fontWeight:profile.name===p.name?700:400}}>{p.name}</span></div>))}
+          {PROFILES.map(p=>(<div key={p.name} style={{display:"flex",alignItems:"center",gap:3,opacity:profile.name===p.name?1:0.3}}><div style={{width:6,height:6,borderRadius:"50%",background:p.color}}/><span style={{fontSize:"0.5rem",color:p.color,fontWeight:profile.name===p.name?700:400}}>{p.name}</span></div>))}
         </div>
       </div>
     </div>
@@ -1376,7 +1443,6 @@ function Results({results, aiData, userInfo, userId, sessionId, onRetake}) {
 }
 
 // ── MAIN APP ───────────────────────────────────────────────────────────────────
-
 export default function CII() {
   const [screen,    setScreen]    = useState("welcome");
   const [qi,        setQi]        = useState(0);
@@ -1388,10 +1454,9 @@ export default function CII() {
   const [userId,    setUserId]    = useState(null);
   const [sessionId, setSessionId] = useState(null);
 
-  // ── Refs so async callbacks always see current IDs ─────────────────────────
   const userIdRef    = React.useRef(null);
   const sessionIdRef = React.useRef(null);
-  const answersRef   = React.useRef({});   // always current answers
+  const answersRef   = React.useRef({});
 
   useEffect(()=>{
     const el=document.createElement("style");
@@ -1413,33 +1478,28 @@ export default function CII() {
   const setAnswer = v => {
     setAnswers(prev => {
       const next = {...prev, [q.id]: v};
-      answersRef.current = next;   // keep ref in sync
+      answersRef.current = next;
       return next;
     });
   };
 
-  // ── Handle user details submitted ──────────────────────────────────────────
   const handleUserDetailsSubmit = async (info, uId) => {
     setUserInfo(info);
     setUserId(uId);
-    userIdRef.current = uId;          // sync ref immediately
+    userIdRef.current = uId;
 
-    let sId = genId();                // fallback id
+    let sId = genId();
     try {
       const sess = await dbCreateSession(uId);
       if (sess?.id) sId = sess.id;
-    } catch(e) {
-      console.warn("[App] Session create failed, using fallback id:", e.message);
-    }
+    } catch(e) { console.warn("[App] Session create failed:", e.message); }
     setSessionId(sId);
-    sessionIdRef.current = sId;       // sync ref immediately
+    sessionIdRef.current = sId;
 
-    console.log("[App] Ready — userId:", uId, "sessionId:", sId);
     setScreen("test");
     setShowIntro(true);
   };
 
-  // ── Navigate to next question / finish ─────────────────────────────────────
   const next = async () => {
     if (qi < Qs.length - 1) {
       const nextSec = SECS.find(s=>s.id===Qs[qi+1].s);
@@ -1447,14 +1507,10 @@ export default function CII() {
       if (nextSec.id !== curSec.id) setShowIntro(true);
       setQi(i=>i+1);
     } else {
-      // ── All 25 questions answered — now score & save ──────────────────────
       setScreen("analyzing");
-
       const currentAnswers = answersRef.current;
       const sId = sessionIdRef.current;
       const uId = userIdRef.current;
-
-      console.log("[App] Submitting — sId:", sId, "uId:", uId, "answers:", Object.keys(currentAnswers).length);
 
       const openAns = Qs.filter(x=>x.type==="open").map(x=>currentAnswers[x.id]||"");
       const prelim  = computeScore(currentAnswers, null);
@@ -1466,28 +1522,14 @@ export default function CII() {
         const ai = await scoreWithAI(openAns, prelim.dims, currentAnswers);
         finalAi  = ai;
         finalRes = computeScore(currentAnswers, ai._divScores);
-        console.log("[App] AI scoring complete");
       } catch(e) {
         console.warn("[App] AI scoring failed, using local scores:", e.message);
         finalRes = computeScore(currentAnswers, null);
       }
 
-      // ── Save answers ────────────────────────────────────────────────────────
       if (sId && uId) {
-        try {
-          await dbSaveAnswers(sId, currentAnswers);
-        } catch(e) {
-          console.error("[App] dbSaveAnswers failed:", e.message);
-        }
-
-        // ── Save results ────────────────────────────────────────────────────
-        try {
-          await dbSaveResults(sId, uId, finalRes, finalAi, userInfo);
-        } catch(e) {
-          console.error("[App] dbSaveResults failed:", e.message);
-        }
-      } else {
-        console.error("[App] CRITICAL: sId or uId missing — DB saves skipped!", {sId, uId});
+        try { await dbSaveAnswers(sId, currentAnswers); } catch(e) { console.error("[App] dbSaveAnswers failed:", e.message); }
+        try { await dbSaveResults(sId, uId, finalRes, finalAi, userInfo); } catch(e) { console.error("[App] dbSaveResults failed:", e.message); }
       }
 
       setResults(finalRes);
@@ -1499,53 +1541,27 @@ export default function CII() {
   const back = () => { if(qi>0) setQi(i=>i-1); };
 
   const retake = () => {
-    // Clear everything including refs
     userIdRef.current    = null;
     sessionIdRef.current = null;
     answersRef.current   = {};
-    setScreen("welcome");
-    setQi(0);
-    setAnswers({});
-    setResults(null);
-    setAiData(null);
-    setUserInfo(null);
-    setUserId(null);
-    setSessionId(null);
-    setShowIntro(false);
+    setScreen("welcome"); setQi(0); setAnswers({}); setResults(null);
+    setAiData(null); setUserInfo(null); setUserId(null); setSessionId(null); setShowIntro(false);
   };
 
-  // ── Screen routing ─────────────────────────────────────────────────────────
   if (screen==="welcome")     return <Welcome onStart={()=>setScreen("userDetails")}/>;
   if (screen==="userDetails") return <UserDetailsForm onSubmit={handleUserDetailsSubmit}/>;
   if (screen==="analyzing")   return <Analyzing/>;
-  if (screen==="results")     return (
-    <Results
-      results={results}
-      aiData={aiData}
-      userInfo={userInfo}
-      userId={userId}
-      sessionId={sessionId}
-      onRetake={retake}
-    />
-  );
+  if (screen==="results")     return <Results results={results} aiData={aiData} userInfo={userInfo} userId={userId} sessionId={sessionId} onRetake={retake}/>;
   if (showIntro && sec)       return <SecIntro sec={sec} onGo={()=>setShowIntro(false)}/>;
-  return (
-    <QScreen
-      q={q} qi={qi} total={Qs.length}
-      answers={answers} setAnswer={setAnswer}
-      onNext={next} onBack={back} canGo={canGo}
-    />
-  );
+  return <QScreen q={q} qi={qi} total={Qs.length} answers={answers} setAnswer={setAnswer} onNext={next} onBack={back} canGo={canGo}/>;
 }
 
 
 // ============================================================
 // SUPABASE SQL SCHEMA
-// Run this in your Supabase project → SQL Editor → New Query
 // ============================================================
 /*
 
--- 1. Users table
 CREATE TABLE IF NOT EXISTS cii_users (
   id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   email         TEXT UNIQUE NOT NULL,
@@ -1557,7 +1573,6 @@ CREATE TABLE IF NOT EXISTS cii_users (
   updated_at    TIMESTAMPTZ DEFAULT now()
 );
 
--- 2. Sessions table
 CREATE TABLE IF NOT EXISTS cii_sessions (
   id            TEXT PRIMARY KEY,
   user_id       UUID REFERENCES cii_users(id) ON DELETE CASCADE,
@@ -1566,7 +1581,6 @@ CREATE TABLE IF NOT EXISTS cii_sessions (
   status        TEXT DEFAULT 'in_progress'
 );
 
--- 3. Answers table
 CREATE TABLE IF NOT EXISTS cii_answers (
   id            BIGSERIAL PRIMARY KEY,
   session_id    TEXT REFERENCES cii_sessions(id) ON DELETE CASCADE,
@@ -1575,7 +1589,6 @@ CREATE TABLE IF NOT EXISTS cii_answers (
   saved_at      TIMESTAMPTZ DEFAULT now()
 );
 
--- 4. Results table
 CREATE TABLE IF NOT EXISTS cii_results (
   id              BIGSERIAL PRIMARY KEY,
   session_id      TEXT REFERENCES cii_sessions(id) ON DELETE CASCADE,
@@ -1598,7 +1611,6 @@ CREATE TABLE IF NOT EXISTS cii_results (
   completed_at    TIMESTAMPTZ DEFAULT now()
 );
 
--- 5. Dashboard exports table
 CREATE TABLE IF NOT EXISTS cii_dashboard_exports (
   id           BIGSERIAL PRIMARY KEY,
   session_id   TEXT REFERENCES cii_sessions(id) ON DELETE CASCADE,
@@ -1607,14 +1619,12 @@ CREATE TABLE IF NOT EXISTS cii_dashboard_exports (
   exported_at  TIMESTAMPTZ DEFAULT now()
 );
 
--- Enable RLS
 ALTER TABLE cii_users             ENABLE ROW LEVEL SECURITY;
 ALTER TABLE cii_sessions          ENABLE ROW LEVEL SECURITY;
 ALTER TABLE cii_answers           ENABLE ROW LEVEL SECURITY;
 ALTER TABLE cii_results           ENABLE ROW LEVEL SECURITY;
 ALTER TABLE cii_dashboard_exports ENABLE ROW LEVEL SECURITY;
 
--- Policies
 CREATE POLICY "anon_insert_users"    ON cii_users    FOR INSERT TO anon WITH CHECK (true);
 CREATE POLICY "anon_select_users"    ON cii_users    FOR SELECT TO anon USING (true);
 CREATE POLICY "anon_update_users"    ON cii_users    FOR UPDATE TO anon USING (true);
@@ -1628,7 +1638,4 @@ CREATE POLICY "anon_select_results"  ON cii_results  FOR SELECT TO anon USING (t
 CREATE POLICY "anon_insert_exports"  ON cii_dashboard_exports FOR INSERT TO anon WITH CHECK (true);
 CREATE POLICY "anon_select_exports"  ON cii_dashboard_exports FOR SELECT TO anon USING (true);
 
--- Storage bucket: create manually in Supabase Dashboard
--- Name: cii-exports  |  Public: YES
-
-*/
+*/ 
